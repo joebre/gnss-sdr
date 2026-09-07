@@ -1346,7 +1346,7 @@ std::map<int, Galileo_Ephemeris> Rtklib_Solver::get_galileo_ephemeris_map_for_pv
 
 
 bool Rtklib_Solver::select_galileo_ephemeris(uint32_t prn, const std::string &signal, uint32_t observation_tow,
-    Galileo_Ephemeris &ephemeris, bool &from_reduced_ced) const
+    Galileo_Ephemeris &ephemeris, bool &from_reduced_ced)
 {
     from_reduced_ced = false;
     if (!is_galileo_signal_used_in_pvt(signal) || observation_tow >= 604800U)
@@ -1354,12 +1354,49 @@ bool Rtklib_Solver::select_galileo_ephemeris(uint32_t prn, const std::string &si
             return false;
         }
 
+    // Prefer this satellite's ephemeris in the receiver's primary navigation
+    // service (see the constructor for how that's chosen). Once a satellite
+    // has successfully used it, it's locked onto that service (below) and
+    // this function stops trying the other service for it, so a promoted
+    // satellite's clock/orbit model never bounces back and forth between
+    // services for no reason -- each such bounce would be a small
+    // discontinuity even though both services are individually accurate.
+    // The lock is released the moment the primary-service ephemeris is
+    // found unusable, whether that's because it just expired for a
+    // previously-locked satellite or because it was never decoded in the
+    // first place -- either way, this (re)starts the same bootstrap
+    // fallback below, so an expired primary ephemeris never permanently
+    // excludes a satellite that still has a perfectly usable ephemeris from
+    // the other service. E.g. E1B's I/NAV ephemeris typically decodes well
+    // before E5a's F/NAV does, so an F/NAV-primary receiver would otherwise
+    // exclude a satellite from PVT for no reason while a perfectly usable
+    // I/NAV ephemeris sits unused (this matters most when E1B is Doppler-
+    // assisting E5a acquisition via GNSS-SDR.assist_dual_frequency_acq,
+    // since E5a reception can be weak enough that F/NAV never fully decodes
+    // at all).
     const Galileo_Ephemeris *full_ephemeris = galileo_ephemeris_store.find(
         static_cast<int>(prn), d_galileo_nav_message_type_for_pvt);
+    if (full_ephemeris != nullptr && galileo_ephemeris_is_usable(*full_ephemeris, observation_tow))
+        {
+            ephemeris = *full_ephemeris;
+            d_galileo_primary_nav_locked_prns_.insert(prn);
+            return true;
+        }
+    d_galileo_primary_nav_locked_prns_.erase(prn);
+
+    // Not locked to the primary service (either never was, or just got
+    // un-locked above) -- bootstrap with whichever other service IS
+    // currently available for this satellite instead.
+    const auto other_nav_message_type = (d_galileo_nav_message_type_for_pvt == Galileo_Nav_Message_Type::INAV)
+                                             ? Galileo_Nav_Message_Type::FNAV
+                                             : Galileo_Nav_Message_Type::INAV;
+    full_ephemeris = galileo_ephemeris_store.find(static_cast<int>(prn), other_nav_message_type);
     const auto compatibility_ephemeris = galileo_ephemeris_map.find(static_cast<int>(prn));
-    if (full_ephemeris == nullptr && compatibility_ephemeris != galileo_ephemeris_map.cend() &&
+    if ((full_ephemeris == nullptr || !galileo_ephemeris_is_usable(*full_ephemeris, observation_tow)) &&
+        compatibility_ephemeris != galileo_ephemeris_map.cend() &&
         (compatibility_ephemeris->second.nav_message_type == Galileo_Nav_Message_Type::Unknown ||
-            compatibility_ephemeris->second.nav_message_type == d_galileo_nav_message_type_for_pvt))
+            compatibility_ephemeris->second.nav_message_type == d_galileo_nav_message_type_for_pvt ||
+            compatibility_ephemeris->second.nav_message_type == other_nav_message_type))
         {
             full_ephemeris = &compatibility_ephemeris->second;
         }
@@ -1369,9 +1406,11 @@ bool Rtklib_Solver::select_galileo_ephemeris(uint32_t prn, const std::string &si
             return true;
         }
 
-    // The ICD only defines Reduced CED use for the E1/E5b service.
-    if (d_galileo_nav_message_type_for_pvt != Galileo_Nav_Message_Type::INAV ||
-        (signal != "1B" && signal != "7X"))
+    // The ICD only defines Reduced CED use for the E1/E5b service (I/NAV),
+    // as a startup bootstrap the same as the fallback above -- gate on the
+    // signal itself; reaching here already means the primary service isn't
+    // in use for this satellite this epoch (see above).
+    if (signal != "1B" && signal != "7X")
         {
             return false;
         }
@@ -2265,12 +2304,12 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                     this->set_rx_pos({rx_position_and_time[0], rx_position_and_time[1], rx_position_and_time[2]});  // save ECEF position for the next iteration
 
                     // compute Ground speed and COG
-                    double ground_speed_ms = 0.0;
                     std::array<double, 3> pos{};
                     std::array<double, 3> enuv{};
                     ecef2pos(pvt_sol.rr, pos.data());
                     ecef2enu(pos.data(), &pvt_sol.rr[3], enuv.data());
-                    this->set_speed_over_ground(norm_rtk(enuv.data(), 2));
+                    const double ground_speed_ms = norm_rtk(enuv.data(), 2);
+                    this->set_speed_over_ground(ground_speed_ms);
                     double new_cog = -9999.0;  // COG not estimated due to insufficient velocity
                     if (ground_speed_ms >= 1.0)
                         {
@@ -2355,6 +2394,76 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                     d_monitor_pvt.pdop = d_dop[1];
                     d_monitor_pvt.hdop = d_dop[2];
                     d_monitor_pvt.vdop = d_dop[3];
+
+                    // USED SATELLITES: per-satellite azimuth/elevation and which
+                    // signal(s) contributed to this fix. Signals are listed
+                    // individually (one entry per satellite per signal); a
+                    // satellite whose signals were combined (e.g. Galileo E1+E5a
+                    // iono-free combination -- see the "dual-frequency" branch of
+                    // prange() in rtklib_pntpos.cc) gets one entry per signal, all
+                    // flagged combined = true.
+                    d_monitor_pvt.used_satellites.clear();
+                    for (int sat_idx = 0; sat_idx < MAXSAT; sat_idx++)
+                        {
+                            if (!pvt_ssat[sat_idx].vs)
+                                {
+                                    continue;
+                                }
+                            int prn = 0;
+                            char sys_char = '?';
+                            switch (satsys(sat_idx + 1, &prn))
+                                {
+                                case SYS_GPS:
+                                    sys_char = 'G';
+                                    break;
+                                case SYS_GAL:
+                                    sys_char = 'E';
+                                    break;
+                                case SYS_GLO:
+                                    sys_char = 'R';
+                                    break;
+                                case SYS_BDS:
+                                    sys_char = 'C';
+                                    break;
+                                case SYS_SBS:
+                                    sys_char = 'S';
+                                    break;
+                                case SYS_QZS:
+                                    sys_char = 'J';
+                                    break;
+                                default:
+                                    break;
+                                }
+
+                            std::vector<const Gnss_Synchro*> contributing_signals;
+                            for (const auto& observable_pair : gnss_observables_map)
+                                {
+                                    const Gnss_Synchro& synchro = observable_pair.second;
+                                    if (synchro.System == sys_char && static_cast<int>(synchro.PRN) == prn)
+                                        {
+                                            contributing_signals.push_back(&synchro);
+                                        }
+                                }
+                            const bool combined = contributing_signals.size() > 1;
+                            // satazel() (rtklib_rtkcmn.cc) returns azimuth in [0, 2*pi); wrap to
+                            // (-180, 180] deg, the convention expected downstream (monitor sky plot).
+                            double az_deg = pvt_ssat[sat_idx].azel[0] * R2D;
+                            if (az_deg > 180.0)
+                                {
+                                    az_deg -= 360.0;
+                                }
+                            for (const Gnss_Synchro* synchro : contributing_signals)
+                                {
+                                    Monitor_Pvt::UsedSatelliteInfo info;
+                                    info.prn = static_cast<uint32_t>(prn);
+                                    info.system = sys_char;
+                                    info.signal = std::string(synchro->Signal, 2);
+                                    info.azimuth_deg = az_deg;
+                                    info.elevation_deg = pvt_ssat[sat_idx].azel[1] * R2D;
+                                    info.combined = combined;
+                                    d_monitor_pvt.used_satellites.push_back(info);
+                                }
+                        }
 
                     this->set_rx_vel({enuv[0], enuv[1], enuv[2]});
 
