@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<metadata xmlns="http://www.ion.org/standards/sdrwg/schema/metadata.xsd">
+
+    <system id="rf-fe">
+        <!-- Reference/ADC sample clock -->
+        <freqbase format="MHz"> 1.775e+02 </freqbase>
+    </system>
+
+    <band id="WB">
+        <centerfreq format="MHz"> 44.5e0 </centerfreq>
+        <translatedfreq format="kHz"> 0.0e+00 </translatedfreq>
+        <bandwidth format="MHz"> 89.0e0 </bandwidth>
+    </band>
+
+    <file>
+        <url>/mnt/DataDisk/Record_live1.rec</url>
+        <timestamp>01-Jan-2026 00:00:00</timestamp>
+        <lane id="RF"/>
+    </file>
+
+    <lane id="RF">
+        <bandsrc idband="WB" idsrc="none"/>
+        <system id="rf-fe"/>
+        <block>
+            <cycles>0</cycles>
+            <chunk>
+                <sizeword>8</sizeword>
+                <countwords>1</countwords>
+                <endian>Little</endian>
+                <padding>None</padding>
+                <wordshift>Right</wordshift>
+                <lump>
+                    <stream id="RF">
+                        <ratefactor>16</ratefactor>
+                        <quantization>4</quantization>
+                        <packedbits>64</packedbits>
+                        <alignment>Right</alignment>
+                        <shift>Left</shift>
+                        <format>IF</format>
+                        <encoding>OBA</encoding>
+                        <band id="WB"/>
+                    </stream>
+                </lump>
+            </chunk>
+        </block>
+    </lane>
+</metadata>

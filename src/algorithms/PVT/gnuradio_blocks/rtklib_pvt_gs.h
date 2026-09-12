@@ -38,6 +38,7 @@
 #include <fstream>                // for std::fstream
 #include <map>                    // for map
 #include <memory>                 // for shared_ptr, unique_ptr
+#include <mutex>                  // for mutex, lock_guard
 #include <queue>                  // for std::queue
 #include <string>                 // for string
 #include <vector>                 // for vector
@@ -123,6 +124,11 @@ public:
     void clear_ephemeris();
 
     /*!
+     * \brief Clear ephemeris information only, leaving GPS/Galileo/BeiDou almanacs untouched
+     */
+    void clear_ephemeris_keep_almanac();
+
+    /*!
      * \brief Get the latest Position WGS84 [deg], Ground Velocity, Course over Ground, and UTC Time, if available
      */
     bool get_latest_PVT(double* longitude_deg,
@@ -182,6 +188,19 @@ private:
 
     std::shared_ptr<Rtklib_Solver> d_internal_pvt_solver;
     std::shared_ptr<Rtklib_Solver> d_user_pvt_solver;
+
+    // Guards the GPS/Galileo/BeiDou ephemeris and almanac maps on both PVT
+    // solvers above. Those maps are written from this block's own message
+    // handler (msg_handler_telemetry, called on GNU Radio's message-passing
+    // thread) but also read from a completely different thread via
+    // get_gps_ephemeris_map() / get_galileo_almanac_map() / etc. (called by
+    // SatelliteVisibility::Tick() on the control thread). Without this,
+    // a reader can observe a torn std::map entry mid-assignment on the
+    // writer side -- e.g. new IODa/toa paired with still-old orbital
+    // elements -- producing a self-contradictory, nonsensical elevation
+    // for one recompute cycle even though no individual write was ever
+    // actually corrupted.
+    mutable std::mutex d_eph_alm_mutex;
 
     std::unique_ptr<boost::interprocess::message_queue> d_mq;
 

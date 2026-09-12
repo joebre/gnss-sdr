@@ -1,0 +1,103 @@
+Acquisition_1B.full_grid_search prevents the grid search process form exit the search at the first detected signal above threshold.
+This avoids false acquisitions due to carrier frequency side lobes. This is necessary for a 100% loss of lock free run (side lobes are only 12 dB below the main lobe, for strong signals this becomes a source of "false" detection).
+
+Correlation of Galileo E1-B signals over bit/secondary code boundary generates a power shift into the adjacent frequency regions. Considering that Galielo E1-B FLL uses a phase wrapped differential phase frequency discriminator which has a capture range of T/4, the above power shift into the nearby frequencies makes the loop unable to capture the signal which falls outside the FLL loop capture range. These cases are terminating in a carrier loss of lock situation (bit sync timeout or PLL not locking).        
+
+Run with Acquisition_1B.full_grid_search but Tracking_1B.f_error_step_num = 0
+labusr@lab-pc-new-sph:~/work/enclustra/gnss-sdr-work/EVK1029$ python3 loss_of_lock_stats.py --conf EVK1029_Galileo_E1_E5a.conf --trials 30
+Trial 1/30: 2 loss-of-lock event(s) [E03, E08], signals used at timeout: 8
+Trial 2/30: 2 loss-of-lock event(s) [E15, E15], signals used at timeout: 8
+Trial 3/30: 2 loss-of-lock event(s) [E26, E08], signals used at timeout: 8
+Trial 4/30: 1 loss-of-lock event(s) [E07], signals used at timeout: 8
+Trial 5/30: 3 loss-of-lock event(s) [E25, E26, E07], signals used at timeout: 8
+Trial 6/30: 4 loss-of-lock event(s) [E07, E25, E26, E07], signals used at timeout: 7
+Trial 7/30: 2 loss-of-lock event(s) [E13, E08], signals used at timeout: 8
+Trial 8/30: 2 loss-of-lock event(s) [E03, E07], signals used at timeout: 8
+Trial 9/30: 2 loss-of-lock event(s) [E15, E15], signals used at timeout: 7
+Trial 10/30: 7 loss-of-lock event(s) [E03, E25, E15, E26, E07, E03, E15], signals used at timeout: 7
+Trial 11/30: 1 loss-of-lock event(s) [E25], signals used at timeout: 8
+Trial 12/30: 3 loss-of-lock event(s) [E15, E26, E26], signals used at timeout: 7
+Trial 13/30: 2 loss-of-lock event(s) [E26, E25], signals used at timeout: 8
+Trial 14/30: 2 loss-of-lock event(s) [E15, E15], signals used at timeout: 7
+Trial 15/30: 4 loss-of-lock event(s) [E15, E26, E26, E15], signals used at timeout: 7
+Trial 16/30: 3 loss-of-lock event(s) [E03, E13, E25], signals used at timeout: 8
+Trial 17/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 18/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 19/30: 1 loss-of-lock event(s) [E26], signals used at timeout: 8
+Trial 20/30: 0 loss-of-lock event(s) [none], signals used at timeout: 7
+Trial 21/30: 3 loss-of-lock event(s) [E15, E03, E08], signals used at timeout: 8
+Trial 22/30: 2 loss-of-lock event(s) [E32, E13], signals used at timeout: 8
+Trial 23/30: 2 loss-of-lock event(s) [E15, E26], signals used at timeout: 8
+Trial 24/30: 4 loss-of-lock event(s) [E03, E26, E32, E08], signals used at timeout: 8
+Trial 25/30: 3 loss-of-lock event(s) [E15, E13, E15], signals used at timeout: 8
+Trial 26/30: 4 loss-of-lock event(s) [E26, E32, E08, E25], signals used at timeout: 7
+Trial 27/30: 2 loss-of-lock event(s) [E15, E07], signals used at timeout: 8
+Trial 28/30: 2 loss-of-lock event(s) [E15, E07], signals used at timeout: 8
+Trial 29/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 30/30: 1 loss-of-lock event(s) [E26], signals used at timeout: 8
+
+===== Statistics over 30 trials (channels <= 12) =====
+Trials with at least one loss-of-lock event: 26/30
+Total loss-of-lock events over the entire trials period: 66
+
+PRN        count   % of trials
+E15           17         56.7%
+E26           14         46.7%
+E07            8         26.7%
+E03            7         23.3%
+E25            7         23.3%
+E08            6         20.0%
+E13            4         13.3%
+E32            3         10.0%
+
+Run with Acquisition_1B.full_grid_search and: 
+Tracking_1B.f_error_step_num                   = 9
+Tracking_1B.f_error_accumulation               = 5; 20 ms
+Tracking_1B.f_error_doppler_step               = 31;62.5; (1/4T)
+
+Trials with a position fix at timeout: 30/30
+Signals used for fix at timeout: mean=7.73, min=7, max=8, median=8.0
+labusr@lab-pc-new-sph:~/work/enclustra/gnss-sdr-work/EVK1029$ python3 loss_of_lock_stats.py --conf EVK1029_Galileo_E1_E5a.conf --trials 30
+Trial 1/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 2/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 3/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 4/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 5/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 6/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 7/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 8/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 9/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 10/30: 1 loss-of-lock event(s) [E07], signals used at timeout: 8
+Trial 11/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 12/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 13/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 14/30: 1 loss-of-lock event(s) [E08], signals used at timeout: 8
+Trial 15/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 16/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 17/30: 2 loss-of-lock event(s) [E03, E07], signals used at timeout: 8
+Trial 18/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 19/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 20/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 21/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 22/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 23/30: 0 loss-of-lock event(s) [none], signals used at timeout: 7
+Trial 24/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 25/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 26/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 27/30: 1 loss-of-lock event(s) [E26], signals used at timeout: 8
+Trial 28/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 29/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+Trial 30/30: 0 loss-of-lock event(s) [none], signals used at timeout: 8
+
+===== Statistics over 30 trials (channels <= 12) =====
+Trials with at least one loss-of-lock event: 4/30
+Total loss-of-lock events over the entire trials period: 5
+
+PRN        count   % of trials
+E07            2          6.7%
+E08            1          3.3%
+E03            1          3.3%
+E26            1          3.3%
+
+Trials with a position fix at timeout: 30/30
+Signals used for fix at timeout: mean=7.97, min=7, max=8, median=8.0

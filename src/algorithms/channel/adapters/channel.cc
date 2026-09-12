@@ -221,9 +221,15 @@ void Channel::stop_channel()
 }
 
 
-void Channel::assist_acquisition_doppler(double Carrier_Doppler_hz)
+void Channel::assist_acquisition_doppler(double Carrier_Doppler_hz, uint32_t doppler_num_bins)
 {
     acq_->set_doppler_center(static_cast<int>(Carrier_Doppler_hz));
+    acq_->set_doppler_num_bins(doppler_num_bins);
+    // doppler_num_bins == 1 means Carrier_Doppler_hz is already known-accurate
+    // (dual-frequency projection, or a visibility-aware Doppler prediction), not
+    // just a search result -- tracking can skip its own post-pull-in recovery
+    // scan for this attempt on that basis. See TrackingInterface::set_doppler_aided().
+    trk_->set_doppler_aided(doppler_num_bins == 1);
 }
 
 

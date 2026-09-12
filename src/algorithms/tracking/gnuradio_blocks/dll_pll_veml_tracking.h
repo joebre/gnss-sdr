@@ -40,6 +40,7 @@
 #include <string>                             // for string
 #include <typeinfo>                           // for typeid
 #include <utility>                            // for pair
+#include <vector>                             // for vector
 
 /** \addtogroup Tracking
  * \{ */
@@ -64,6 +65,17 @@ public:
     ~dll_pll_veml_tracking() override;
 
     void set_channel(uint32_t channel);
+    //! Set by Channel::assist_acquisition_doppler() alongside the matching
+    //! Acquisition_*.set_doppler_num_bins(1) call -- true means this
+    //! attempt's acquisition Doppler is already known-accurate (dual-
+    //! frequency projection, or GNSS-SDR.enable_visibility_aware_search's
+    //! ephemeris/almanac-based prediction), not just a full/narrowed-grid
+    //! search result. Skips the post-pull-in frequency-error-reduction scan
+    //! (state 5) for the upcoming pull-in even if f_error_step_num != 0:
+    //! that scan exists to recover a Doppler estimate an *unassisted*
+    //! search left spread across bins near a bit/secondary-code boundary,
+    //! which doesn't apply when the estimate came from aiding instead.
+    void set_doppler_aided(bool aided);
     void set_gnss_synchro(Gnss_Synchro *p_gnss_synchro);
     void start_tracking();
     void stop_tracking();
@@ -73,6 +85,11 @@ public:
 
     void forecast(int noutput_items, gr_vector_int &ninput_items_required) override;
 
+    //! Doppler offset multiplier (in units of f_error_doppler_step) for the given
+    //! frequency-error-reduction bin index: bin 0 -> 0, then alternating outward
+    //! +1, -1, +2, -2, +3, -3, ...
+    static double f_error_bin_multiplier(uint32_t bin_index);
+
 private:
     friend dll_pll_veml_tracking_sptr dll_pll_veml_make_tracking(const Dll_Pll_Conf &conf_);
     explicit dll_pll_veml_tracking(const Dll_Pll_Conf &conf_);
@@ -80,6 +97,19 @@ private:
     void msg_handler_telemetry_to_trk(const pmt::pmt_t &msg);
     void do_correlation_step(const gr_complex *input_samples);
     void run_dll_pll();
+    // carrier-only half of run_dll_pll() (PLL/FLL discriminator + loop filter -> d_carrier_doppler_hz).
+    void run_pll_fll();
+    // code-only half of run_dll_pll() (DLL discriminator + loop filter -> d_code_freq_chips,
+    // aided by d_carrier_doppler_hz). Only ever called from state 2/3/4 -- state 5 (the
+    // frequency-error-reduction scan, see run_f_error_scan_step()) doesn't call this at all,
+    // so code tracking/aiding is entirely unaffected by the scan by construction.
+    void run_dll();
+    // State 5: frequency-error-reduction Doppler-bin scan, run right after pull-in (state 1)
+    // and before wide tracking (state 2) -- see general_work()'s case 5. Fully passive: drives
+    // only d_carrier_doppler_hz from the swept test bin; neither run_dll() nor run_pll_fll()
+    // run during the scan, so code phase and the carrier loop filter's state stay exactly as
+    // pull-in left them for the scan's whole duration.
+    void run_f_error_scan_step();
     void check_carrier_phase_coherent_initialization();
     void update_tracking_vars();
     void clear_tracking_vars();
@@ -90,6 +120,7 @@ private:
     void configure_bit_synchronizer();
     bool cn0_and_tracking_lock_status(double coh_integration_time_s);
     bool acquire_secondary();
+    void log_time_to_fix_breakdown(const char *method);  // DIAGNOSTIC: phase lock vs. bit sync timing
     int64_t uint64diff(uint64_t first, uint64_t second);
     int32_t save_matfile() const;
 
@@ -118,6 +149,26 @@ private:
     boost::circular_buffer<std::pair<double, double>> d_code_ph_history;
     boost::circular_buffer<std::pair<double, double>> d_carr_ph_history;
     boost::circular_buffer<gr_complex> d_Prompt_circular_buffer;
+
+    // Doppler the frequency-error-reduction scan selected at the end of its run (see
+    // run_f_error_scan_step()), kept separately from d_carrier_doppler_hz (which gets
+    // overwritten by the FLL/PLL every epoch afterward) so a subsequent loss-of-lock can
+    // report how far steady-state tracking has drifted from what the scan originally chose
+    // -- e.g. to check whether the loop settled on a false/sidelobe equilibrium.
+    double d_f_error_selected_doppler_hz = 0.0;
+    // Smoothed FLL frequency-error discriminator output during pull-in (see run_pll_fll()),
+    // used to gate the FLL->PLL handover on actual convergence rather than a fixed timer --
+    // see the d_pull_in_transitory clearing check in general_work(). A PLL phase discriminator
+    // is only reliable while the phase change per coherent epoch stays under 90 degrees, i.e.
+    // |freq error| < 1/(4*Td); handing off before the FLL has actually gotten there can leave
+    // the PLL outside its capture range, settling into a persistent false residual instead of
+    // true lock.
+    double d_fll_freq_error_smoothed_hz = 0.0;
+    bool d_fll_freq_error_smoothed_valid = false;
+    // Raw corr_value outcomes from acquire_secondary(), in call order, since the last
+    // pull-in. Dumped to secondary_sync_dump.csv (dump_secondary_sync_csv()) when the
+    // bit_synchronization_time_limit_s watchdog fires.
+    std::vector<int32_t> d_secondary_corr_series;
 
     const size_t d_int_type_hash_code = typeid(int).hash_code();
     const size_t d_tow_to_trk_type_hash_code = typeid(std::shared_ptr<TOW_to_trk>).hash_code();
@@ -208,6 +259,21 @@ private:
     uint32_t d_secondary_code_length;
     uint32_t d_data_secondary_code_length;
 
+    // State 5: frequency-error-reduction Doppler-bin scan (see run_f_error_scan_step()).
+    // Bin count comes from d_trk_parameters.f_error_step_num (0 disables state 5 entirely,
+    // so case 1/pull-in goes straight to state 2 instead -- so does d_doppler_aided_, set
+    // via set_doppler_aided(), regardless of f_error_step_num, for the same reason).
+    bool d_doppler_aided_{false};
+    uint32_t d_f_error_num_bins;
+    uint32_t d_f_error_bin_index;
+    uint32_t d_f_error_accum_counter;
+    double d_f_error_center_doppler_hz;
+    std::vector<double> d_f_error_power;
+    // Raw per-bin Prompt correlator samples (bin index -> f_error_accumulation samples),
+    // kept purely so cn0_m2m4_estimator() can report a CN0 estimate for the winning bin
+    // in the frequency-error-reduction diagnostics; not used for anything else.
+    std::vector<std::vector<gr_complex>> d_f_error_prompt_samples;
+
     bool d_pull_in_transitory;
     bool d_corrected_doppler;
     bool d_interchange_iq;
@@ -220,8 +286,18 @@ private:
     bool d_enable_extended_integration;
     bool d_Flag_PLL_180_deg_phase_locked;
     bool d_use_histogram_bit_sync;
+
     bool d_wait_for_bit_edge{false};
     bool d_b1c_prelock_output_pending{false};
+
+    // DIAGNOSTIC: time-to-fix breakdown (phase lock vs. bit/secondary-code sync), see
+    // general_work()'s state-2 entry points and the accumulation gates.
+    int64_t d_tracking_loop_started_sample{-1};  // nitems_read(0) when state first entered 2 (run_dll_pll() starts), -1 = not yet
+    int64_t d_phase_lock_first_sample{-1};       // nitems_read(0) at first carrier_lock_test >= threshold since then, -1 = not yet
+    int32_t d_bit_sync_reset_count{0};           // kept at 0 (no more gate to reset on); retained so the log format doesn't change shape
+    int32_t d_acquire_secondary_attempts{0};     // acquire_secondary() calls since the buffer first filled, reset per tracking attempt
+    int64_t d_case2_cycle_count{0};              // case-2 epochs executed since tracking loop started, reset per tracking attempt
+    int32_t d_locked_branch_cycle_count{0};      // of those, how many reached the (now unconditional) accumulation code
 };
 
 

@@ -1388,8 +1388,8 @@ bool Rtklib_Solver::select_galileo_ephemeris(uint32_t prn, const std::string &si
     // un-locked above) -- bootstrap with whichever other service IS
     // currently available for this satellite instead.
     const auto other_nav_message_type = (d_galileo_nav_message_type_for_pvt == Galileo_Nav_Message_Type::INAV)
-                                             ? Galileo_Nav_Message_Type::FNAV
-                                             : Galileo_Nav_Message_Type::INAV;
+                                            ? Galileo_Nav_Message_Type::FNAV
+                                            : Galileo_Nav_Message_Type::INAV;
     full_ephemeris = galileo_ephemeris_store.find(static_cast<int>(prn), other_nav_message_type);
     const auto compatibility_ephemeris = galileo_ephemeris_map.find(static_cast<int>(prn));
     if ((full_ephemeris == nullptr || !galileo_ephemeris_is_usable(*full_ephemeris, observation_tow)) &&
@@ -2006,9 +2006,10 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
 
             const auto sbas_time_reference = std::find_if(
                 gnss_observables_map.cbegin(), gnss_observables_map.cend(),
-                [](const std::pair<const int, Gnss_Synchro> &entry) {
-                    return entry.second.fs > 0;
-                });
+                [](const std::pair<const int, Gnss_Synchro> &entry)
+                    {
+                        return entry.second.fs > 0;
+                    });
             if (sbas_time_reference != gnss_observables_map.cend())
                 {
                     int gps_week = 0;
@@ -2214,6 +2215,16 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                         {
                             d_pvt_kf.reset_Kf();
                         }
+                    // d_monitor_pvt otherwise stays frozen at its last-successful-epoch
+                    // snapshot (position, clock drift, tracked_satellites...) with nothing
+                    // below this branch to refresh it this cycle. Invalidate RX_time --
+                    // the same "no PVT yet" sentinel channel_status_msg_receiver seeds
+                    // its own d_pvt_status with -- so a consumer checking RX_time >= 0.0
+                    // (e.g. SatelliteVisibility's fix_valid) correctly treats a stale
+                    // snapshot from a since-failed solve as "no current fix" instead of
+                    // trusting position/clock-drift data from an epoch RTKLIB's own
+                    // chi-square validation rejected.
+                    d_monitor_pvt.RX_time = -1;
                 }
             else
                 {
@@ -2402,13 +2413,38 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                     // iono-free combination -- see the "dual-frequency" branch of
                     // prange() in rtklib_pntpos.cc) gets one entry per signal, all
                     // flagged combined = true.
-                    d_monitor_pvt.used_satellites.clear();
+                    //
+                    // rescode() (rtklib_pntpos.cc) computes azel via satazel()
+                    // *before* checking it against PVT.elevation_mask, and
+                    // pntpos() copies that azel into ssat[] unconditionally --
+                    // only ssat[].vs is gated by the mask. So a satellite that
+                    // is tracked and has a live observation this epoch, but
+                    // falls below PVT.elevation_mask, still has a valid azel
+                    // here; only vs is false. Report it anyway with used =
+                    // false instead of dropping it, so a below-mask satellite
+                    // shows up in the monitor as "not used" rather than as
+                    // missing/no-az-el (which otherwise looks identical to a
+                    // tracking problem).
+                    //
+                    // Deliberately NOT filtered for NaN here: a corrupt ephemeris/
+                    // almanac (e.g. an out-of-range eccentricity) can propagate NaN
+                    // through eph2pos()/alm2pos()/satazel(), and that NaN is reported
+                    // as-is rather than silently dropping the satellite from the
+                    // monitor -- consumers (gnss-sdr-CtrlApp) are expected to handle
+                    // a NaN azimuth_deg/elevation_deg explicitly (e.g. no sky plot
+                    // entry, "NaN" printed in the signal table) rather than have it
+                    // hidden here. What NaN must NOT do is influence the position fix
+                    // itself -- see rescode()'s prange()/elaux isfinite guards in
+                    // rtklib_pntpos.cc for where that's actually enforced.
+                    d_monitor_pvt.tracked_satellites.clear();
                     for (int sat_idx = 0; sat_idx < MAXSAT; sat_idx++)
                         {
-                            if (!pvt_ssat[sat_idx].vs)
+                            const bool has_azel = (pvt_ssat[sat_idx].azel[0] != 0.0) || (pvt_ssat[sat_idx].azel[1] != 0.0);
+                            if (!has_azel)
                                 {
                                     continue;
                                 }
+                            const bool used = pvt_ssat[sat_idx].vs != 0;
                             int prn = 0;
                             char sys_char = '?';
                             switch (satsys(sat_idx + 1, &prn))
@@ -2435,16 +2471,63 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                                     break;
                                 }
 
-                            std::vector<const Gnss_Synchro*> contributing_signals;
-                            for (const auto& observable_pair : gnss_observables_map)
+                            // Broadcast health status, independent of `used` below: an
+                            // unhealthy satellite is always excluded from the fix, but
+                            // `used` alone can't tell a monitor client *why* (could also
+                            // be below PVT.elevation_mask, RAIM, etc.). Same fields/logic
+                            // as the "reports an unhealthy status" check in
+                            // rtklib_pvt_gs.cc, just read from the currently-stored
+                            // ephemeris instead of a freshly-arrived message. Only GPS and
+                            // Galileo are covered (the systems this receiver actually
+                            // tracks); other systems default to healthy=true rather than
+                            // guessing.
+                            bool healthy = true;
+                            if (sys_char == 'G')
                                 {
-                                    const Gnss_Synchro& synchro = observable_pair.second;
+                                    const auto eph_it = gps_ephemeris_map.find(prn);
+                                    if (eph_it != gps_ephemeris_map.end())
+                                        {
+                                            healthy = (eph_it->second.SV_health == 0);
+                                        }
+                                }
+                            else if (sys_char == 'E')
+                                {
+                                    const auto &galileo_eph_map = galileo_ephemeris_store.by_source(d_galileo_nav_message_type_for_pvt);
+                                    const auto eph_it = galileo_eph_map.find(prn);
+                                    if (eph_it != galileo_eph_map.end())
+                                        {
+                                            const auto &e = eph_it->second;
+                                            const bool reports_unhealthy =
+                                                (e.nav_message_type == Galileo_Nav_Message_Type::FNAV &&
+                                                    ((e.E5a_HS != 0) || e.E5a_DVS)) ||
+                                                (e.nav_message_type == Galileo_Nav_Message_Type::INAV &&
+                                                    (((e.E1B_HS != 0) || e.E1B_DVS) ||
+                                                        ((e.E5b_HS != 0) || e.E5b_DVS)));
+                                            healthy = !reports_unhealthy;
+                                        }
+                                }
+
+                            std::vector<const Gnss_Synchro *> contributing_signals;
+                            for (const auto &observable_pair : gnss_observables_map)
+                                {
+                                    const Gnss_Synchro &synchro = observable_pair.second;
                                     if (synchro.System == sys_char && static_cast<int>(synchro.PRN) == prn)
                                         {
                                             contributing_signals.push_back(&synchro);
                                         }
                                 }
-                            const bool combined = contributing_signals.size() > 1;
+                            // True only when RTKLIB actually formed a single ionosphere-free
+                            // pseudorange from this satellite's signals (prange()'s IONOOPT_IFLC
+                            // branch, rtklib_pntpos.cc), not merely "more than one signal from
+                            // this satellite happened to feed the solver as independent
+                            // observations" (PVT.iono_model = Broadcast, the default, corrects
+                            // each band's pseudorange separately -- no combination happens).
+                            // Under IONOOPT_IFLC, prange() is all-or-nothing per satellite: either
+                            // every needed band is present and it returns one combined pseudorange,
+                            // or it returns 0 and this satellite is excluded entirely that epoch
+                            // (never silently falls back to single-frequency) -- so "used" already
+                            // implies "combined" whenever the run is actually configured for it.
+                            const bool combined = used && (d_rtk.opt.ionoopt == IONOOPT_IFLC);
                             // satazel() (rtklib_rtkcmn.cc) returns azimuth in [0, 2*pi); wrap to
                             // (-180, 180] deg, the convention expected downstream (monitor sky plot).
                             double az_deg = pvt_ssat[sat_idx].azel[0] * R2D;
@@ -2452,16 +2535,18 @@ bool Rtklib_Solver::get_PVT(const std::map<int, Gnss_Synchro> &gnss_observables_
                                 {
                                     az_deg -= 360.0;
                                 }
-                            for (const Gnss_Synchro* synchro : contributing_signals)
+                            for (const Gnss_Synchro *synchro : contributing_signals)
                                 {
-                                    Monitor_Pvt::UsedSatelliteInfo info;
+                                    Monitor_Pvt::TrackedSatelliteInfo info;
                                     info.prn = static_cast<uint32_t>(prn);
                                     info.system = sys_char;
                                     info.signal = std::string(synchro->Signal, 2);
                                     info.azimuth_deg = az_deg;
                                     info.elevation_deg = pvt_ssat[sat_idx].azel[1] * R2D;
                                     info.combined = combined;
-                                    d_monitor_pvt.used_satellites.push_back(info);
+                                    info.used = used;
+                                    info.healthy = healthy;
+                                    d_monitor_pvt.tracked_satellites.push_back(info);
                                 }
                         }
 

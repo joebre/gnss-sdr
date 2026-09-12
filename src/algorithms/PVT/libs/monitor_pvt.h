@@ -18,8 +18,10 @@
 #define GNSS_SDR_MONITOR_PVT_H
 
 #include <boost/serialization/nvp.hpp>
+#include <boost/serialization/vector.hpp>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 /** \addtogroup PVT
  * \{ */
@@ -33,6 +35,59 @@
 class Monitor_Pvt
 {
 public:
+    /*!
+     * \brief One tracked satellite/signal, with its azimuth/elevation,
+     * whether it was combined with another signal of the same satellite
+     * (e.g. Galileo E1+E5a iono-free combination -- see the
+     * "dual-frequency" branch of prange() in rtklib_pntpos.cc), and whether
+     * it was actually used in this fix (see the `used` member below).
+     * Signals are listed individually (one entry per satellite per signal),
+     * not merged, so a combined satellite appears as two entries both
+     * flagged combined = true.
+     */
+    class TrackedSatelliteInfo
+    {
+    public:
+        uint32_t prn{};
+        char system{};  // 'G' GPS, 'E' Galileo, 'R' GLONASS, 'C' BeiDou, 'S' SBAS, 'J' QZSS
+        std::string signal;
+        double azimuth_deg{};
+        double elevation_deg{};
+        bool combined{};
+        // false when this satellite/signal was tracked and had azimuth/elevation
+        // computed but was excluded from the fix itself (e.g. below
+        // PVT.elevation_mask) -- azimuth_deg/elevation_deg are still valid in
+        // that case, only the position solve ignored this observation.
+        bool used{true};
+        // false when this satellite's own broadcast ephemeris marks it
+        // unhealthy (GPS/QZSS SV_health, Galileo E1B/E5b/E5a health+DVS --
+        // see rtklib_solver.cc's tracked_satellites loop for exactly which
+        // fields) -- independent of `used`: an unhealthy satellite is always
+        // excluded from the fix, but `used` alone doesn't say *why* (could
+        // also be below PVT.elevation_mask, RAIM, etc.), which is what a
+        // monitor client needs to tell "unhealthy" apart from those other
+        // reasons.
+        bool healthy{true};
+
+        template <class Archive>
+        void serialize(Archive& ar, const unsigned int version)
+        {
+            if (version)
+                {
+                };
+            ar& BOOST_SERIALIZATION_NVP(prn);
+            ar& BOOST_SERIALIZATION_NVP(system);
+            ar& BOOST_SERIALIZATION_NVP(signal);
+            ar& BOOST_SERIALIZATION_NVP(azimuth_deg);
+            ar& BOOST_SERIALIZATION_NVP(elevation_deg);
+            ar& BOOST_SERIALIZATION_NVP(combined);
+            ar& BOOST_SERIALIZATION_NVP(used);
+            ar& BOOST_SERIALIZATION_NVP(healthy);
+        }
+    };
+
+    std::vector<TrackedSatelliteInfo> tracked_satellites;
+
     // TOW
     uint32_t TOW_at_current_symbol_ms;
     // WEEK
@@ -155,6 +210,7 @@ public:
 
         ar& BOOST_SERIALIZATION_NVP(cog);
         ar& BOOST_SERIALIZATION_NVP(geohash);
+        ar& BOOST_SERIALIZATION_NVP(tracked_satellites);
     }
 };
 

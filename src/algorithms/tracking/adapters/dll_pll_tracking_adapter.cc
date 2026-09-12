@@ -276,6 +276,12 @@ void DllPllTrackingAdapter::set_channel(unsigned int channel)
 }
 
 
+void DllPllTrackingAdapter::set_doppler_aided(bool aided)
+{
+    tracking_sptr_->set_doppler_aided(aided);
+}
+
+
 void DllPllTrackingAdapter::set_gnss_synchro(Gnss_Synchro* p_gnss_synchro)
 {
     tracking_sptr_->set_gnss_synchro(p_gnss_synchro);

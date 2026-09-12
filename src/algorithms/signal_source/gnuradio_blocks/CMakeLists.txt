@@ -20,6 +20,11 @@ if(ENABLE_ION)
     set(OPT_DRIVER_HEADERS ${OPT_DRIVER_HEADERS} ion_gsms.h)
 endif()
 
+if(ENABLE_EVK1029)
+    set(OPT_DRIVER_SOURCES ${OPT_DRIVER_SOURCES} evk1029_source.cc)
+    set(OPT_DRIVER_HEADERS ${OPT_DRIVER_HEADERS} evk1029_source.h)
+endif()
+
 set(SIGNAL_SOURCE_GR_BLOCKS_SOURCES
     fifo_reader.cc
     unpack_byte_2bit_samples.cc

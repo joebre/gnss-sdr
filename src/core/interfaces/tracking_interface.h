@@ -51,6 +51,15 @@ public:
     virtual void stop_tracking() = 0;
     virtual void set_gnss_synchro(Gnss_Synchro* gnss_synchro) = 0;
     virtual void set_channel(unsigned int channel) = 0;
+    //! Set by Channel::assist_acquisition_doppler() alongside the matching
+    //! Acquisition_*.set_doppler_num_bins(1) call -- true when this
+    //! attempt's acquisition Doppler is already known-accurate (aided),
+    //! not just a search result. Implementations that support a post-pull-in
+    //! recovery scan (e.g. dll_pll_veml_tracking's frequency-error-reduction
+    //! state) can skip it when this is set, since there's nothing to
+    //! recover from an aided estimate. No-op default for implementations
+    //! without such a scan.
+    virtual void set_doppler_aided(bool /*aided*/) {}
 };
 
 

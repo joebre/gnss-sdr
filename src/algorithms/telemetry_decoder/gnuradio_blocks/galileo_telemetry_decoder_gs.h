@@ -160,6 +160,10 @@ private:
     bool d_enable_reed_solomon_inav;
     bool d_valid_timetag;
     bool d_E6_TOW_set;
+    // DEBUG: print once per pull-in when the F/NAV TOW first becomes valid,
+    // to measure the actual bit-sync -> TOW latency. Reset alongside
+    // d_fnav_nav's own flag_TOW_set on frame-sync loss (see CRC_ERROR_LIMIT).
+    bool d_fnav_tow_reported;
     bool d_galileo_week_valid;
     const bool d_there_are_e1_channels;
     const bool d_there_are_e6_channels;

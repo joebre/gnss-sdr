@@ -1,0 +1,162 @@
+[GNSS-SDR]
+;ControlThread.wait_for_flowgraph = false
+
+;######### GLOBAL OPTIONS ##################
+GNSS-SDR.num_sources               = 1
+GNSS-SDR.internal_fs_sps           = 17750000; internal working rate after decimation
+GNSS-SDR.osnma_enable              = false
+GNSS-SDR.observable_interval_ms    = 1000
+
+; Currentely unavailable Galileo PRNs
+GNSS-SDR.Galileo_banned_prns = 1,14,17,18,20,22,24,35
+
+; Aiding
+GNSS-SDR.AGNSS_XML_enabled       = true
+GNSS-SDR.AGNSS_ref_location      = 46.012965,8.907565
+
+; Record 1
+SignalSource0.filename           = /mnt/DataDisk/11_08_2026_12_10_48/Record_live.rec
+GNSS-SDR.AGNSS_ref_utc_time      = 11/08/2026 12:10:53.000000
+GNSS-SDR.AGNSS_gal_ephemeris_xml = /mnt/DataDisk/11_08_2026_12_10_48/gal_fnav_ephemeris.xml
+GNSS-SDR.AGNSS_gal_almanac_xml   = /mnt/DataDisk/11_08_2026_12_10_48/gal_almanac.xml
+GNSS-SDR.AGNSS_gal_iono_xml      = /mnt/DataDisk/11_08_2026_12_10_48/gal_iono.xml
+GNSS-SDR.AGNSS_gal_utc_model_xml = /mnt/DataDisk/11_08_2026_12_10_48/gal_utc_model.xml
+;GNSS-SDR.AGNSS_gps_ephemeris_xml = /mnt/DataDisk/11_08_2026_12_10_48/gps_ephemeris.xml
+;GNSS-SDR.AGNSS_gps_almanac_xml   = /mnt/DataDisk/11_08_2026_12_10_48/gps_almanac.xml
+;GNSS-SDR.AGNSS_gps_iono_xml      = /mnt/DataDisk/11_08_2026_12_10_48/gps_iono.xml
+;GNSS-SDR.AGNSS_gps_utc_model_xml = /mnt/DataDisk/11_08_2026_12_10_48/gps_utc_model.xml
+
+;######### SIGNAL_SOURCE CONFIG ############
+SignalSource0.implementation           = EVK1029_Signal_Source
+SignalSource0.sampling_frequency       = 177500000
+SignalSource0.RF_channels              = 1
+;SignalSource0.dump                    = true
+;SignalSource0.dump_filename           = ./evk1029_signal_source.dat
+
+;######### SIGNAL_CONDITIONER CONFIG ############
+SignalConditioner0.implementation = Signal_Conditioner
+
+;######### DATA_TYPE_ADAPTER CONFIG ############
+DataTypeAdapter0.implementation = Pass_Through
+DataTypeAdapter0.item_type      = byte
+
+;######### INPUT_FILTER CONFIG ############
+; RF CHANNEL 0 -> extracts band at IF0
+InputFilter0.implementation     = Freq_Xlating_Fir_Filter
+InputFilter0.input_item_type    = byte
+InputFilter0.output_item_type   = gr_complex
+InputFilter0.taps_item_type     = float
+InputFilter0.sampling_frequency = 177500000
+InputFilter0.IF                 = -22080000
+InputFilter0.filter_type        = lowpass
+InputFilter0.bw                 = 10000000
+InputFilter0.tw                 = 5000000
+InputFilter0.decimation_factor  = 10
+;InputFilter0.dump              = true
+;InputFilter0.dump_filename     = ./ion_raw_band0_Xlated.dat
+
+;######### RESAMPLER CONFIG ############
+Resampler0.implementation = Pass_Through
+
+
+;######### CHANNELS GLOBAL CONFIG ############
+Channels.in_acquisition   = 10
+Channels_1B.count         = 10; Galileo E1
+Channels_1B.RF_channel_ID = 0
+
+;######### TRACKING GLOBAL CONFIG ############
+; Galileo E1-C Pilot channel acquisition primary code 4092 chips/1.023Mcps=4ms; secondry code (25 chip): 25×4ms = 100ms
+; Doppler step is 1/2T keeps correlation loss due to frequency error below 4 dBs. 
+Acquisition_1B.implementation                 = Galileo_E1_PCPS_Ambiguous_Acquisition
+Acquisition_1B.full_grid_search               = true
+Acquisition_1B.acquire_pilot                  = true
+Acquisition_1B.item_type                      = gr_complex
+Acquisition_1B.coherent_integration_time_ms   = 4
+Acquisition_1B.doppler_max                    = 5000
+Acquisition_1B.doppler_step                   = 125; * 1/2*T (3.8 dB max loss)
+Acquisition_1B.max_dwells                     = 5; 20 ms incoherent accumulation
+Acquisition_1B.pfa                            = 1e-7
+Acquisition_1B.cboc                           = true
+
+;Acquisition_1B.make_two_steps=true
+;Acquisition_1B.second_doppler_step=20
+
+;Acquisition_1B.dump                          = true
+;Acquisition_1B.dump_mat                      = true
+;Acquisition_1B.dump_filename                 = ./acq_galileoE1.dat
+
+;######### TRACKING GLOBAL CONFIG ############
+; FLL frequency discriminator is a wrapped ATAN delta phase discriminator. Whith T=4 ms has a capture range of 1/4T = 62.5 Hz. 
+; Galileo E1 acquisition may correlate over bit/second code boundary. In this case power shifts to lateral frequency bins. 
+; To guarantee that signals are passed from Acquisition to thraking with a frequency error suitable for the frequency discriminator 
+; (or even worst, compatible with the phase discriminator ;capture range) a sequential dopler scan phase must be performed.
+; This reduces the frequency error down to what the FLL/PLL loop can handle.
+; FLL tracking treshold: 3-sigma_FLL <=  1/4T 
+; PLL tracking treshold: 3-sigma_PLL <=  20 deg
+Tracking_1B.implementation                     = Galileo_E1_DLL_PLL_VEML_Tracking
+Tracking_1B.item_type                          = gr_complex
+Tracking_1B.fll_bw_hz                          = 10.0; (T=4-ms; the 1-sigma jitter stays below 20-Hz  @ 30-dB-Hz)
+Tracking_1B.pll_bw_hz                          = 10.0; (T=4-ms; the 1-sigma jitter stays below 15 deg @ 30 dB-HZ)
+Tracking_1B.dll_bw_hz                          = 2.0;  (T=4-ms; typ. well below 1/6th 1-sigma DLL phase jitter at 30 dB-Hz, fast convergence)
+Tracking_1B.pll_bw_narrow_hz                   = 5.0;  (T=20-ms; the 1-sigma jitter stays below 15 deg @ 30 dB-HZ; jerk > 10 g/s)
+Tracking_1B.dll_bw_narrow_hz                   = 0.5;  (T=20-ms; typ. well below 1/6th 1-sigma DLL phase jitter at 30 dB-Hz)
+Tracking_1B.enable_fll_pull_in                 = true
+Tracking_1B.enable_fll_steady_state            = false
+Tracking_1B.track_pilot                        = true
+Tracking_1B.carrier_aiding                     = true
+Tracking_1B.early_late_space_chips             = 0.15
+Tracking_1B.very_early_late_space_chips        = 0.6
+Tracking_1B.very_early_late_space_narrow_chips = 0.30
+Tracking_1B.extend_correlation_symbols         = 5
+Tracking_1B.f_error_step_num                   = 9 
+Tracking_1B.f_error_accumulation               = 5; 20 ms
+Tracking_1B.f_error_doppler_step               = 31;62.5; (1/2T)
+;Tracking_1B.f_error_dump_filename              = f_error_dump_filename_Galileo.csv
+;Tracking_1B.dump                               = true
+;Tracking_1B.dump_filename                      = trk_galileoE1_ch
+
+;######### TELEMETRY DECODER GPS CONFIG ############
+TelemetryDecoder_1B.implementation = Galileo_E1B_Telemetry_Decoder
+
+
+;######### OBSERVABLES CONFIG ############
+Observables.implementation = Hybrid_Observables
+;Observables.dump          = true 
+
+PVT.implementation             = RTKLIB_PVT
+PVT.elevation_mask             = 10
+PVT.num_bands                  = 1
+PVT.dynamics_model             = 0
+PVT.raim_fde                   = 1
+PVT.enable_pvt_kf              = true
+PVT.output_rate_ms             = 1000
+PVT.display_rate_ms            = 1000
+PVT.output_enabled             = true
+PVT.max_clock_offset_ms        = 1000
+PVT.gpx_output_enabled         = false
+PVT.geojson_output_enabled     = false
+PVT.kml_output_enabled         = false
+PVT.xml_output_enabled         = false; this enables ephemeris dump
+PVT.nmea_output_file_enabled   = false
+PVT.rinexobs_rate_ms           = 1000
+PVT.iono_model                 = Broadcast
+PVT.trop_model                 = Saastamoinen
+PVT.rinex_output_enabled       = false
+PVT.rinex_version              = 4
+PFT.rinexobs_rate_ms           = 1000
+PVT.kf_measures_ecef_pos_sd_m  = 5
+PVT.kf_measures_ecef_vel_sd_ms = 0.5
+PVT.kf_system_ecef_pos_sd_m    = 0.1
+PVT.kf_system_ecef_vel_sd_ms   = 0.001
+
+;######### Remot monitr/control CONFIG ############
+GNSS-SDR.telecommand_enabled   = true
+GNSS-SDR.telecommand_tcp_port  = 3333
+
+PVT.enable_monitor             = true
+PVT.monitor_client_addresses   = 127.0.0.1
+PVT.monitor_udp_port           = 1111
+
+Monitor.enable_monitor         = true
+Monitor.client_addresses       = 127.0.0.1
+Monitor.udp_port               = 1112

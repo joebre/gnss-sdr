@@ -118,6 +118,7 @@ galileo_telemetry_decoder_gs::galileo_telemetry_decoder_gs(const Tlm_Conf &conf,
       d_enable_reed_solomon_inav(false),
       d_valid_timetag(false),
       d_E6_TOW_set(false),
+      d_fnav_tow_reported(false),
       d_galileo_week_valid(false),
       d_there_are_e1_channels(conf.there_are_e1_channels),
       d_there_are_e6_channels(conf.there_are_e6_channels),
@@ -1093,7 +1094,25 @@ int galileo_telemetry_decoder_gs::general_work(int noutput_items __attribute__((
                         {
                             d_preamble_index = d_symbol_counter;  // record the preamble sample stamp
                             LOG(INFO) << "Preamble detection for Galileo satellite " << this->d_satellite << " in channel " << this->d_channel;
-                            d_stat = 1;  // enter into frame pre-detection status
+                            if (d_frame_type == 2)
+                                {
+                                    // F/NAV: skip the double-preamble-period confirmation (state 1) and decode
+                                    // this candidate directly. The 24-bit F/NAV CRC (~6e-8 false-accept) is a far
+                                    // stronger check than the confirmation it would otherwise gate on, and it's
+                                    // already the sole guard used to *maintain* frame sync on every later page
+                                    // (see CRC_ERROR_LIMIT below) -- applying that same trust to the first page
+                                    // saves one full page period (~10 s) of pure waiting.
+                                    d_CRC_error_counter = 0;
+                                    d_flag_PLL_180_deg_phase_locked = (corr_value < 0);
+                                    d_stat = 2;
+                                    std::cout << "Galileo E5a candidate preamble in channel " << d_channel
+                                              << " for satellite " << d_satellite << " at symbol_counter=" << d_symbol_counter
+                                              << " (confirmation skipped, deciding on CRC)\n";
+                                }
+                            else
+                                {
+                                    d_stat = 1;  // enter into frame pre-detection status
+                                }
                         }
                 }
             break;
@@ -1197,6 +1216,11 @@ int galileo_telemetry_decoder_gs::general_work(int noutput_items __attribute__((
                             d_Tlm_CRC_Stats->update_CRC_stats(crc_ok);
                         }
 
+                    if (d_frame_type == 2)  // DEBUG: E5a F/NAV bit-sync -> TOW latency instrumentation
+                        {
+                            std::cout << "Galileo E5a page CRC " << (crc_ok ? "OK" : "FAIL") << " in channel " << d_channel
+                                      << " for satellite " << d_satellite << " at symbol_counter=" << d_symbol_counter << '\n';
+                        }
                     d_preamble_index = d_symbol_counter;  // record the preamble sample stamp (t_P)
                     if (crc_ok)
                         {
@@ -1243,6 +1267,7 @@ int galileo_telemetry_decoder_gs::general_work(int noutput_items __attribute__((
                                     clear_galileo_tow_map_entry();
                                     d_fnav_nav.set_flag_TOW_set(false);
                                     d_inav_nav.set_flag_TOW_set(false);
+                                    d_fnav_tow_reported = false;
                                 }
                         }
                 }
@@ -1478,6 +1503,14 @@ int galileo_telemetry_decoder_gs::general_work(int noutput_items __attribute__((
             if (d_fnav_nav.get_flag_TOW_set() == true)
                 {
                     current_symbol.Flag_valid_word = true;
+                    if (!d_fnav_tow_reported)
+                        {
+                            d_fnav_tow_reported = true;
+                            LOG(INFO) << "Galileo E5a F/NAV TOW first valid in channel " << d_channel
+                                      << " for satellite " << d_satellite << " at sample_counter=" << d_received_sample_counter;
+                            std::cout << "Galileo E5a F/NAV TOW first valid in channel " << d_channel
+                                      << " for satellite " << d_satellite << '\n';
+                        }
                 }
             break;
         case 3:  // CNAV

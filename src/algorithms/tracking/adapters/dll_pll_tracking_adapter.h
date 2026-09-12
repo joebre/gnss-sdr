@@ -105,6 +105,8 @@ public:
      */
     void set_gnss_synchro(Gnss_Synchro* p_gnss_synchro) override;
 
+    void set_doppler_aided(bool aided) override;
+
     /*!
      * \brief Start the Tracking block
      */

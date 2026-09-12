@@ -416,6 +416,66 @@ bool Galileo_Inav_Message::have_new_almanac()  // Check if we have a new almanac
 {
     if ((flag_almanac_1 == true) && (flag_almanac_2 == true) && (flag_almanac_3 == true) && (flag_almanac_4 == true))
         {
+            // Each of words 7/8/9/10 carries its own copy of IODa (the almanac
+            // set's issue-of-data), redundantly re-broadcasting the same value
+            // for the whole 3-satellite batch. There's no timeout on a
+            // partially-received batch above -- if reception is interrupted
+            // after word 7 arrives and doesn't resume until much later, that
+            // stale flag_almanac_1 (and the SVID1_7/t0a_7/etc. it guards)
+            // just sits there until words 8/9/10 eventually complete, quite
+            // possibly from a *different* broadcast cycle by then (the
+            // almanac rotates through the whole constellation over many
+            // cycles). The result would combine one satellite's data from an
+            // old cycle with others' from an unrelated one -- each field
+            // individually valid, but not describing a coherent almanac set.
+            // Requiring all four IODa copies to agree is a direct, cheap way
+            // to catch exactly that: they can only match if all four words
+            // came from the same broadcast cycle.
+            if ((IOD_a_7 != IOD_a_8) || (IOD_a_8 != IOD_a_9) || (IOD_a_9 != IOD_a_10))
+                {
+                    flag_almanac_1 = false;
+                    flag_almanac_2 = false;
+                    flag_almanac_3 = false;
+                    flag_almanac_4 = false;
+                    return false;
+                }
+
+            // The IODa check above is necessary but not sufficient: it only
+            // verifies all four words belong to the same almanac
+            // *publication* (IODa), not necessarily the same broadcast
+            // occurrence -- two decodes of the very same publication,
+            // minutes apart, could in principle combine words from
+            // different repeats of the cycle. Requiring all four to have
+            // been decoded within a bounded page span closes that gap.
+            //
+            // Verified live 2026-09-03: legitimate, ephemeris-cross-checked
+            // batches for one specific slot consistently show
+            // seq(1/2/3/4) spans of exactly 16 decoded pages (words 7/8 in
+            // one subframe, 9/10 arriving from the next -- normal, not
+            // corruption; confirmed by computing elevation from the
+            // resulting orbital elements and matching official ground
+            // truth to within 0.03 deg). An earlier, tighter threshold of
+            // 12 was set from a misreading of an ambiguous trace and ended
+            // up discarding exactly this legitimate 16-page pattern,
+            // permanently starving those PRNs of any accepted almanac
+            // update (worse than no check at all). 25 comfortably covers
+            // the normal one-subframe-plus-a-bit pattern (with slack for a
+            // skipped/repeated page) while still being far tighter than the
+            // original, unvalidated 60 (4 full subframes -- plenty of room
+            // for the almanac slot assignment itself to rotate to a
+            // different satellite mid-span).
+            constexpr int64_t kMaxAlmanacBatchPageSpan = 25;
+            const int64_t seq_min = std::min({almanac_1_seq_, almanac_2_seq_, almanac_3_seq_, almanac_4_seq_});
+            const int64_t seq_max = std::max({almanac_1_seq_, almanac_2_seq_, almanac_3_seq_, almanac_4_seq_});
+            if (seq_max - seq_min > kMaxAlmanacBatchPageSpan)
+                {
+                    flag_almanac_1 = false;
+                    flag_almanac_2 = false;
+                    flag_almanac_3 = false;
+                    flag_almanac_4 = false;
+                    return false;
+                }
+
             // All Almanac data have been received
             flag_almanac_1 = false;
             flag_almanac_2 = false;
@@ -865,6 +925,15 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
     const std::string data_jk_string = data_jk;
     const std::bitset<GALILEO_DATA_JK_BITS> data_jk_bits(data_jk_string);
 
+    // Counts every successfully-decoded nominal page for this channel, used
+    // by have_new_almanac() below to catch a case its IODa check alone
+    // can't: IODa is only 4 bits, so it recycles over a long session, and
+    // two unrelated broadcast cycles can coincidentally show the same
+    // value. Recording how far apart (in page count) words 7/8/9/10 were
+    // actually decoded lets that check also require them to be temporally
+    // close, not just IODa-equal.
+    d_page_seq_counter++;
+
     const auto page_number = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, PAGE_TYPE_BIT));
     DLOG(INFO) << "Page number = " << page_number;
 
@@ -1110,7 +1179,19 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             t0a_7 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, T0A_7_BIT));
             t0a_7 = t0a_7 * T0A_7_LSB;
             DLOG(INFO) << "t0a_7= " << t0a_7;
-            SVID1_7 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D1_7_BIT));
+            {
+                const int32_t new_svid1_7 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D1_7_BIT));
+                // Same mechanism as the SVID2_8/flag_almanac_3 guard below:
+                // SVID1's af0/af1/health (case 1 in get_almanac()) come from
+                // word 8, decoded one subframe after word 7's own identity.
+                // A pending flag_almanac_2 when SVID1_7 changes still
+                // describes the slot's previous occupant.
+                if (flag_almanac_2 && new_svid1_7 != SVID1_7)
+                    {
+                        flag_almanac_2 = false;
+                    }
+                SVID1_7 = new_svid1_7;
+            }
             DLOG(INFO) << "SVID1_7= " << SVID1_7;
             DELTA_A_7 = static_cast<double>(read_navigation_signed(data_jk_bits, DELTA_A_7_BIT));
             DELTA_A_7 = DELTA_A_7 * DELTA_A_7_LSB;
@@ -1130,10 +1211,13 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             Omega_dot_7 = static_cast<double>(read_navigation_signed(data_jk_bits, OMEGA_DOT_7_BIT));
             Omega_dot_7 = Omega_dot_7 * OMEGA_DOT_7_LSB;
             DLOG(INFO) << "Omega_dot_7= " << Omega_dot_7;
-            M0_7 = static_cast<double>(read_navigation_signed(data_jk_bits, M0_7_BIT));
-            M0_7 = M0_7 * M0_7_LSB;
+            {
+                const int64_t M0_7_raw = read_navigation_signed(data_jk_bits, M0_7_BIT);
+                M0_7 = static_cast<double>(M0_7_raw) * M0_7_LSB;
+            }
             DLOG(INFO) << "M0_7= " << M0_7;
             flag_almanac_1 = true;
+            almanac_1_seq_ = d_page_seq_counter;
             DLOG(INFO) << "flag_tow_set" << flag_TOW_set;
             break;
 
@@ -1141,17 +1225,41 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             page_position_in_inav_subframe = 4;
             IOD_a_8 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, IOD_A_8_BIT));
             DLOG(INFO) << "IOD_a_8= " << IOD_a_8;
-            af0_8 = static_cast<double>(read_navigation_signed(data_jk_bits, AF0_8_BIT));
-            af0_8 = af0_8 * AF0_8_LSB;
+            {
+                const int64_t af0_8_raw = read_navigation_signed(data_jk_bits, AF0_8_BIT);
+                const int64_t af1_8_raw = read_navigation_signed(data_jk_bits, AF1_8_BIT);
+                af0_8 = static_cast<double>(af0_8_raw) * AF0_8_LSB;
+                af1_8 = static_cast<double>(af1_8_raw) * AF1_8_LSB;
+            }
             DLOG(INFO) << "af0_8= " << af0_8;
-            af1_8 = static_cast<double>(read_navigation_signed(data_jk_bits, AF1_8_BIT));
-            af1_8 = af1_8 * AF1_8_LSB;
             DLOG(INFO) << "af1_8= " << af1_8;
             E5b_HS_8 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, E5B_HS_8_BIT));
             DLOG(INFO) << "E5b_HS_8= " << E5b_HS_8;
             E1B_HS_8 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, E1_B_HS_8_BIT));
             DLOG(INFO) << "E1B_HS_8= " << E1B_HS_8;
-            SVID2_8 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D2_8_BIT));
+            {
+                const int32_t new_svid2_8 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D2_8_BIT));
+                // Word 8 carries SVID2's own identity, but M0_9/af0_9/af1_9
+                // (SVID2's *second* half) live in word 9, decoded
+                // separately -- and, per the fixed word-to-page schedule,
+                // one subframe *before* word 8's own identity update for a
+                // new slot-group cycle. If the almanac slot has just
+                // rotated to a different satellite (SVID2_8 changing) while
+                // flag_almanac_3 is already pending, that pending M0_9/etc.
+                // still describes the *previous* occupant of this slot, not
+                // the one word 8 just named -- confirmed live 2026-09-03:
+                // watched a batch complete with a stale word-9 value, then
+                // self-correct to the right one exactly one subframe (~28s)
+                // later with no change to SVID1/SVID2/SVID3 or IODa in
+                // between. Discarding the stale pending word 9 here forces
+                // a fresh one to be captured for the new identity before
+                // the batch is allowed to complete.
+                if (flag_almanac_3 && new_svid2_8 != SVID2_8)
+                    {
+                        flag_almanac_3 = false;
+                    }
+                SVID2_8 = new_svid2_8;
+            }
             DLOG(INFO) << "SVID2_8= " << SVID2_8;
             DELTA_A_8 = static_cast<double>(read_navigation_signed(data_jk_bits, DELTA_A_8_BIT));
             DELTA_A_8 = DELTA_A_8 * DELTA_A_8_LSB;
@@ -1172,6 +1280,7 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             Omega_dot_8 = Omega_dot_8 * OMEGA_DOT_8_LSB;
             DLOG(INFO) << "Omega_dot_8= " << Omega_dot_8;
             flag_almanac_2 = true;
+            almanac_2_seq_ = d_page_seq_counter;
             DLOG(INFO) << "flag_tow_set" << flag_TOW_set;
             break;
 
@@ -1184,20 +1293,35 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             t0a_9 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, T0A_9_BIT));
             t0a_9 = t0a_9 * T0A_9_LSB;
             DLOG(INFO) << "t0a_9= " << t0a_9;
-            M0_9 = static_cast<double>(read_navigation_signed(data_jk_bits, M0_9_BIT));
-            M0_9 = M0_9 * M0_9_LSB;
+            {
+                const int64_t M0_9_raw = read_navigation_signed(data_jk_bits, M0_9_BIT);
+                const int64_t af0_9_raw = read_navigation_signed(data_jk_bits, AF0_9_BIT);
+                const int64_t af1_9_raw = read_navigation_signed(data_jk_bits, AF1_9_BIT);
+                M0_9 = static_cast<double>(M0_9_raw) * M0_9_LSB;
+                af0_9 = static_cast<double>(af0_9_raw) * AF0_9_LSB;
+                af1_9 = static_cast<double>(af1_9_raw) * AF1_9_LSB;
+            }
             DLOG(INFO) << "M0_9= " << M0_9;
-            af0_9 = static_cast<double>(read_navigation_signed(data_jk_bits, AF0_9_BIT));
-            af0_9 = af0_9 * AF0_9_LSB;
             DLOG(INFO) << "af0_9= " << af0_9;
-            af1_9 = static_cast<double>(read_navigation_signed(data_jk_bits, AF1_9_BIT));
-            af1_9 = af1_9 * AF1_9_LSB;
             DLOG(INFO) << "af1_9= " << af1_9;
             E5b_HS_9 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, E5B_HS_9_BIT));
             DLOG(INFO) << "E5b_HS_9= " << E5b_HS_9;
             E1B_HS_9 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, E1_B_HS_9_BIT));
             DLOG(INFO) << "E1B_HS_9= " << E1B_HS_9;
-            SVID3_9 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D3_9_BIT));
+            {
+                const int32_t new_svid3_9 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, SVI_D3_9_BIT));
+                // Same mechanism as the SVID2_8/flag_almanac_3 guard above,
+                // one word later: word 9 carries SVID3's own identity, but
+                // its second half (M0_10/af0_10/af1_10/...) lives in word
+                // 10, decoded one subframe later. A pending flag_almanac_4
+                // when SVID3_9 changes still describes the slot's previous
+                // occupant.
+                if (flag_almanac_4 && new_svid3_9 != SVID3_9)
+                    {
+                        flag_almanac_4 = false;
+                    }
+                SVID3_9 = new_svid3_9;
+            }
             DLOG(INFO) << "SVID3_9= " << SVID3_9;
             DELTA_A_9 = static_cast<double>(read_navigation_signed(data_jk_bits, DELTA_A_9_BIT));
             DELTA_A_9 = DELTA_A_9 * DELTA_A_9_LSB;
@@ -1212,6 +1336,7 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             delta_i_9 = delta_i_9 * DELTA_I_9_LSB;
             DLOG(INFO) << "delta_i_9= " << delta_i_9;
             flag_almanac_3 = true;
+            almanac_3_seq_ = d_page_seq_counter;
             DLOG(INFO) << "flag_tow_set" << flag_TOW_set;
             break;
 
@@ -1225,14 +1350,16 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
             Omega_dot_10 = static_cast<double>(read_navigation_signed(data_jk_bits, OMEGA_DOT_10_BIT));
             Omega_dot_10 = Omega_dot_10 * OMEGA_DOT_10_LSB;
             DLOG(INFO) << "Omega_dot_10= " << Omega_dot_10;
-            M0_10 = static_cast<double>(read_navigation_signed(data_jk_bits, M0_10_BIT));
-            M0_10 = M0_10 * M0_10_LSB;
+            {
+                const int64_t M0_10_raw = read_navigation_signed(data_jk_bits, M0_10_BIT);
+                const int64_t af0_10_raw = read_navigation_signed(data_jk_bits, AF0_10_BIT);
+                const int64_t af1_10_raw = read_navigation_signed(data_jk_bits, AF1_10_BIT);
+                M0_10 = static_cast<double>(M0_10_raw) * M0_10_LSB;
+                af0_10 = static_cast<double>(af0_10_raw) * AF0_10_LSB;
+                af1_10 = static_cast<double>(af1_10_raw) * AF1_10_LSB;
+            }
             DLOG(INFO) << "M0_10= " << M0_10;
-            af0_10 = static_cast<double>(read_navigation_signed(data_jk_bits, AF0_10_BIT));
-            af0_10 = af0_10 * AF0_10_LSB;
             DLOG(INFO) << "af0_10= " << af0_10;
-            af1_10 = static_cast<double>(read_navigation_signed(data_jk_bits, AF1_10_BIT));
-            af1_10 = af1_10 * AF1_10_LSB;
             DLOG(INFO) << "af1_10= " << af1_10;
             E5b_HS_10 = static_cast<int32_t>(read_navigation_unsigned(data_jk_bits, E5B_HS_10_BIT));
             DLOG(INFO) << "E5b_HS_10= " << E5b_HS_10;
@@ -1260,6 +1387,7 @@ int32_t Galileo_Inav_Message::page_jk_decoder(const char* data_jk)
                                 read_navigation_unsigned(data_jk_bits, T_0_G_10_BIT) == 0x00FFU &&
                                 read_navigation_unsigned(data_jk_bits, WN_0_G_10_BIT) == 0x003FU);
             flag_almanac_4 = true;
+            almanac_4_seq_ = d_page_seq_counter;
             DLOG(INFO) << "flag_tow_set" << flag_TOW_set;
             nav_bits_word_10 = data_jk_bits.to_string().substr(86, 42);
             break;

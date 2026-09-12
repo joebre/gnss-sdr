@@ -120,6 +120,19 @@ public:
         monitor_.set_galhas_status(monitor->galhas_status);
         monitor_.set_geohash(monitor->geohash);
 
+        for (const auto& sat : monitor->tracked_satellites)
+            {
+                gnss_sdr::MonitorPvt::TrackedSatellite* pb_sat = monitor_.add_tracked_satellites();
+                pb_sat->set_prn(sat.prn);
+                pb_sat->set_system(std::string(1, sat.system));
+                pb_sat->set_signal(sat.signal);
+                pb_sat->set_azimuth_deg(sat.azimuth_deg);
+                pb_sat->set_elevation_deg(sat.elevation_deg);
+                pb_sat->set_combined(sat.combined);
+                pb_sat->set_used(sat.used);
+                pb_sat->set_healthy(sat.healthy);
+            }
+
         if (!monitor_.SerializeToString(&data))
             {
                 return {};
@@ -167,6 +180,20 @@ public:
         monitor.cog = mon.cog();
         monitor.galhas_status = mon.galhas_status();
         monitor.geohash = mon.geohash();
+
+        for (const auto& pb_sat : mon.tracked_satellites())
+            {
+                Monitor_Pvt::TrackedSatelliteInfo sat;
+                sat.prn = pb_sat.prn();
+                sat.system = pb_sat.system().empty() ? '\0' : pb_sat.system()[0];
+                sat.signal = pb_sat.signal();
+                sat.azimuth_deg = pb_sat.azimuth_deg();
+                sat.elevation_deg = pb_sat.elevation_deg();
+                sat.combined = pb_sat.combined();
+                sat.used = pb_sat.used();
+                sat.healthy = pb_sat.healthy();
+                monitor.tracked_satellites.push_back(sat);
+            }
 
         return monitor;
     }

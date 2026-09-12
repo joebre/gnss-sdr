@@ -132,7 +132,9 @@ TEST(QzssLnavNavigationMessageTest, DecodesQzoAlmanacFromSubframe4)
     EXPECT_NEAR(0.25 - 25.0 * ALM_DELTAI_LSB, almanac.delta_i, 1e-14);
     EXPECT_NEAR(-30.0 * ALM_OMEGADOT_LSB, almanac.OMEGAdot, 1e-18);
 
-    const auto rtklib_almanac = alm_to_rtklib(almanac);
+    // ref_week=0 here since this test doesn't exercise WNa week resolution,
+    // only the field mapping asserted below.
+    const auto rtklib_almanac = alm_to_rtklib(almanac, 0);
     EXPECT_EQ(satno(SYS_QZS, 194), rtklib_almanac.sat);
     EXPECT_NEAR(almanac.delta_i * GNSS_PI, rtklib_almanac.i0, 1e-12);
 }
@@ -159,7 +161,9 @@ TEST(GpsLnavNavigationMessageTest, KeepsGpsAlmanacReferenceConvention)
     EXPECT_NEAR(100.0 * ALM_ECC_LSB, almanac.ecc, 1e-14);
     EXPECT_NEAR(-25.0 * ALM_DELTAI_LSB, almanac.delta_i, 1e-14);
 
-    const auto rtklib_almanac = alm_to_rtklib(almanac);
+    // ref_week=0 here since this test doesn't exercise WNa week resolution,
+    // only the field mapping asserted below.
+    const auto rtklib_almanac = alm_to_rtklib(almanac, 0);
     EXPECT_EQ(satno(SYS_GPS, 2), rtklib_almanac.sat);
     EXPECT_NEAR((0.3 + almanac.delta_i) * GNSS_PI, rtklib_almanac.i0, 1e-12);
 }

@@ -303,6 +303,12 @@ void PcpsAcquisitionAdapter::set_doppler_center(int doppler_center)
 }
 
 
+void PcpsAcquisitionAdapter::set_doppler_num_bins(unsigned int doppler_num_bins)
+{
+    acquisition_->set_doppler_num_bins(doppler_num_bins);
+}
+
+
 void PcpsAcquisitionAdapter::set_gnss_synchro(Gnss_Synchro* gnss_synchro)
 {
     gnss_synchro_ = gnss_synchro;

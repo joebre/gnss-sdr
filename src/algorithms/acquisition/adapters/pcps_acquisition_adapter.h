@@ -103,6 +103,12 @@ public:
     void set_doppler_center(int doppler_center) override;
 
     /*!
+     * \brief Set the number of Doppler bins to search, centered on
+     * set_doppler_center() -- see pcps_acquisition::set_doppler_num_bins().
+     */
+    void set_doppler_num_bins(unsigned int doppler_num_bins) override;
+
+    /*!
      * \brief Returns the maximum peak of grid search
      */
     signed int mag() override;

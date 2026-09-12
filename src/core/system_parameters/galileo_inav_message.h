@@ -513,6 +513,17 @@ private:
     bool flag_almanac_3{};    // Flag indicating that almanac 3/4 (word 9) have been received
     bool flag_almanac_4{};    // Flag indicating that almanac 4/4 (word 10) have been received
 
+    // Monotonic count of nominal pages decoded by this channel; d_page_seq_
+    // counter's value is snapshotted into almanac_N_seq_ at the same time
+    // flag_almanac_N is set, so have_new_almanac() can additionally check
+    // that words 7/8/9/10 were decoded close together in time, not just
+    // that their IODa copies happen to match numerically.
+    int64_t d_page_seq_counter{0};
+    int64_t almanac_1_seq_{-1};
+    int64_t almanac_2_seq_{-1};
+    int64_t almanac_3_seq_{-1};
+    int64_t almanac_4_seq_{-1};
+
     bool flag_GGTO_1{};
     bool flag_GGTO_2{};
     bool flag_GGTO_3{};
