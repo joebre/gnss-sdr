@@ -1396,10 +1396,36 @@ bool dll_pll_veml_tracking::cn0_and_tracking_lock_status(double coh_integration_
         }
     if (d_carrier_lock_fail_counter > d_trk_parameters.max_carrier_lock_fail || d_code_lock_fail_counter > d_trk_parameters.max_code_lock_fail)
         {
-            std::cout << "Loss of lock in channel " << d_channel << ", satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << " !\n";
+            // f_error_selected_doppler_hz/doppler_drift_hz are only meaningful once the
+            // frequency-error-reduction scan has actually run for this pull-in (it's
+            // skipped entirely when f_error_step_num == 0); reporting them unconditionally
+            // would print a bogus, untouched 0.0 default otherwise.
+            std::ostringstream f_error_fields;
+            if (d_trk_parameters.f_error_step_num != 0)
+                {
+                    f_error_fields << " f_error_selected_doppler_hz:" << d_f_error_selected_doppler_hz
+                                   << " doppler_drift_hz:" << (d_carrier_doppler_hz - d_f_error_selected_doppler_hz);
+                }
+            std::cout << "Loss of lock in channel " << d_channel << ", satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN)
+                      << ", signal " << d_signal_pretty_name
+                      << " ! (carrier_lock_fail_counter:" << d_carrier_lock_fail_counter
+                      << " code_lock_fail_counter:" << d_code_lock_fail_counter
+                      << " pull_in_transitory:" << d_pull_in_transitory
+                      << " CN0_dB_Hz:" << d_CN0_SNV_dB_Hz
+                      << " carrier_lock_test:" << d_carrier_lock_test
+                      << " acq_doppler_hz:" << d_acq_carrier_doppler_hz
+                      << f_error_fields.str()
+                      << " current_doppler_hz:" << d_carrier_doppler_hz << ")\n";
             LOG(INFO) << "Loss of lock in channel " << d_channel << ", satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN)
+                      << ", signal " << d_signal_pretty_name
                       << " (carrier_lock_fail_counter:" << d_carrier_lock_fail_counter
-                      << " code_lock_fail_counter : " << d_code_lock_fail_counter << ")";
+                      << " code_lock_fail_counter : " << d_code_lock_fail_counter
+                      << " pull_in_transitory:" << d_pull_in_transitory
+                      << " CN0_dB_Hz:" << d_CN0_SNV_dB_Hz
+                      << " carrier_lock_test:" << d_carrier_lock_test
+                      << " acq_doppler_hz:" << d_acq_carrier_doppler_hz
+                      << f_error_fields.str()
+                      << " current_doppler_hz:" << d_carrier_doppler_hz << ")";
             this->message_port_pub(pmt::mp("events"), pmt::from_long(3));  // 3 -> loss of lock
             d_carrier_lock_fail_counter = 0;
             d_code_lock_fail_counter = 0;
@@ -2260,8 +2286,13 @@ void dll_pll_veml_tracking::run_f_error_scan_step()
             // on its own -- discarding the scan's whole point. Re-seed it here with the winning estimate.
             d_carrier_loop_filter.initialize(static_cast<float>(d_carrier_doppler_hz));
 
+            // "offset" here is relative to the pull-in estimate (d_f_error_center_doppler_hz),
+            // not the absolute carrier Doppler -- 0 Hz means pull-in was already accurate, not
+            // that no correction was applied. current_doppler_hz is the absolute value actually
+            // handed to the loop filter above.
             LOG(INFO) << "Frequency error reduction: selected Doppler offset " << f_error_bin_multiplier(best_bin) * d_trk_parameters.f_error_doppler_step
-                      << " Hz on channel " << d_channel << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN);
+                      << " Hz relative to pull-in (current_doppler_hz:" << d_carrier_doppler_hz << ") on channel " << d_channel
+                      << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN);
 
             // CN0 estimate for the winning bin, from its own raw Prompt samples (same
             // M2M4 estimator/coherent integration time as the state 2/3/4 CN0 estimation).

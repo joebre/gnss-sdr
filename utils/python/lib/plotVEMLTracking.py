@@ -92,14 +92,20 @@ def plotVEMLTracking(channelNr, trackResults, settings):
         plt.xlabel('I prompt')
         plt.ylabel('Q prompt')
 
-        # Nav bits
+        # Nav bits -- which axis (I or Q) actually carries the data bits is
+        # signal/tracking-mode dependent (e.g. GPS L5 with track_pilot=true
+        # has it on Q, not I); plot both rather than guess, so the real one
+        # is visible regardless of config.
         plt.subplot(3, 3, (2, 3))
         plt.plot(timeAxis, trackResults[channelNr-1]['data_I'],
-                 linewidth=1)
+                 linewidth=1, label='I')
+        plt.plot(timeAxis, trackResults[channelNr-1]['data_Q'],
+                 linewidth=1, label='Q')
         plt.grid()
         plt.title('Bits of the navigation message', fontweight='bold')
         plt.xlabel(time_label)
         plt.axis('tight')
+        plt.legend()
 
         # Raw PLL discriminator unfiltered
         plt.subplot(3, 3, 4)
