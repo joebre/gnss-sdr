@@ -776,6 +776,21 @@ void pcps_acquisition::doppler_grid_cpu(const gr_complex* in)
     const auto bin_count = d_step_two ? d_num_doppler_bins_step2 : d_num_doppler_bins_active;
     const auto* grid_doppler_wipeoffs = d_step_two ? d_grid_doppler_wipeoffs_step_two.data() : d_grid_doppler_wipeoffs.data();
 
+    // Confirmed empirically: each dwell consumes a fixed, floor()-truncated
+    // d_samples_to_consume samples (see pcps_acquisition_adapter.cc), so when
+    // samples_per_code is not an integer the true code epoch drifts FORWARD,
+    // within each dwell's own window, by (dwells_elapsed * (samples_per_code -
+    // d_samples_to_consume)) samples relative to the first dwell. Shift this
+    // dwell's correlation output BACKWARD by that amount (circularly) before
+    // summing it into the running non-coherent total.
+    uint32_t shift_back = 0U;
+    if (d_num_noncoherent_integrations_counter > 1U)
+        {
+            const auto dwells_elapsed = static_cast<double>(d_num_noncoherent_integrations_counter - 1U);
+            const double drift = dwells_elapsed * (static_cast<double>(d_acq_parameters.samples_per_code) - static_cast<double>(d_samples_to_consume));
+            shift_back = static_cast<uint32_t>(std::lround(drift)) % d_effective_fft_size;
+        }
+
     for (uint32_t doppler_index = 0; doppler_index < bin_count; doppler_index++)
         {
             auto* magnitude_grid = magnitude_grid_data(doppler_index);
@@ -803,7 +818,20 @@ void pcps_acquisition::doppler_grid_cpu(const gr_complex* in)
             else
                 {
                     volk_32fc_magnitude_squared_32f(d_tmp_buffer.data(), d_ifft->get_outbuf() + offset, d_effective_fft_size);
-                    volk_32f_x2_add_32f(magnitude_grid, magnitude_grid, d_tmp_buffer.data(), d_effective_fft_size);
+                    if (shift_back == 0U)
+                        {
+                            volk_32f_x2_add_32f(magnitude_grid, magnitude_grid, d_tmp_buffer.data(), d_effective_fft_size);
+                        }
+                    else
+                        {
+                            // magnitude_grid[idx] needs d_tmp_buffer[(idx + shift_back) % n]: two
+                            // plain (non-wrapping) VOLK adds at the right offsets, no temporary
+                            // buffer or per-element modulo needed.
+                            const uint32_t n = d_effective_fft_size;
+                            const uint32_t first_len = n - shift_back;
+                            volk_32f_x2_add_32f(magnitude_grid, magnitude_grid, d_tmp_buffer.data() + shift_back, first_len);
+                            volk_32f_x2_add_32f(magnitude_grid + first_len, magnitude_grid + first_len, d_tmp_buffer.data(), shift_back);
+                        }
                 }
         }
 }
@@ -835,16 +863,34 @@ void pcps_acquisition::update_synchro(const AcquisitionResult& result)
     d_gnss_synchro->Acq_delay_samples = static_cast<double>(std::fmod(static_cast<float>(result.index_time), d_acq_parameters.samples_per_code));
     d_gnss_synchro->Acq_doppler_hz = static_cast<double>(result.doppler);
 
+    // result.index_time (and so Acq_delay_samples above) is referenced to the
+    // FIRST dwell's window start S1 (see the shift_back correction in
+    // doppler_grid_cpu()), but result.sample_count is the raw stream position
+    // after ALL dwells so far, each of which consumed a fixed, floor()-truncated
+    // d_samples_to_consume samples: result.sample_count - S1 == dwells * D.
+    // Tracking's pull-in reconstruction needs (Acq_samplestamp_samples - S1) to
+    // be a whole number of TRUE code periods, i.e. dwells * samples_per_code, so
+    // fmod() strips it away cleanly; correct the gap between that and dwells * D.
+    double samplestamp_correction = 0.0;
+    if (d_num_noncoherent_integrations_counter > 0U)
+        {
+            const auto dwells = static_cast<double>(d_num_noncoherent_integrations_counter);
+            samplestamp_correction = dwells * (static_cast<double>(d_acq_parameters.samples_per_code) - static_cast<double>(d_samples_to_consume));
+        }
+
     if (d_acq_parameters.use_automatic_resampler)
         {
-            // take into account the acquisition resampler ratio
+            // take into account the acquisition resampler ratio. samplestamp_correction
+            // is in resampled_fs-domain samples (it's derived from samples_per_code /
+            // d_samples_to_consume, both resampled_fs-domain per acq_conf.cc), so it is
+            // added AFTER result.sample_count (raw fs_in-domain) is converted, not before.
             d_gnss_synchro->Acq_delay_samples = (d_gnss_synchro->Acq_delay_samples * d_acq_parameters.resampler_ratio) - static_cast<double>(d_resampler_latency_samples);
-            d_gnss_synchro->Acq_samplestamp_samples = rint(static_cast<double>(result.sample_count) * d_acq_parameters.resampler_ratio);
+            d_gnss_synchro->Acq_samplestamp_samples = rint(static_cast<double>(result.sample_count) * d_acq_parameters.resampler_ratio + samplestamp_correction);
             d_gnss_synchro->fs = d_acq_parameters.resampled_fs;
         }
     else
         {
-            d_gnss_synchro->Acq_samplestamp_samples = result.sample_count;
+            d_gnss_synchro->Acq_samplestamp_samples = static_cast<uint64_t>(std::llround(static_cast<double>(result.sample_count) + samplestamp_correction));
             d_gnss_synchro->fs = d_acq_parameters.fs_in;
         }
 
