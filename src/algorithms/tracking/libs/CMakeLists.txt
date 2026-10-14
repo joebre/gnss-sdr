@@ -21,6 +21,7 @@ set(TRACKING_LIB_SOURCES
     bayesian_estimation.cc
     exponential_smoother.cc
     bit_synchronizer.cc
+    secondary_code_synchronizer.cc
 )
 
 set(TRACKING_LIB_HEADERS
@@ -40,6 +41,7 @@ set(TRACKING_LIB_HEADERS
     bayesian_estimation.h
     exponential_smoother.h
     bit_synchronizer.h
+    secondary_code_synchronizer.h
 )
 
 if(ENABLE_CUDA)

@@ -21,6 +21,7 @@
 #include <gnuradio/io_signature.h>
 #include <pmt/pmt.h>        // for from_double
 #include <pmt/pmt_sugar.h>  // for mp
+#include <algorithm>        // for min
 #include <cmath>            // for round
 #include <iostream>         // for operator<<
 #include <memory>
@@ -39,10 +40,9 @@ gnss_sdr_sample_counter::gnss_sdr_sample_counter(
     double _fs,
     int32_t _interval_ms,
     size_t _size)
-    : gr::sync_decimator("sample_counter",
+    : gr::block("sample_counter",
           gr::io_signature::make(1, 1, _size),
-          gr::io_signature::make(1, 1, sizeof(Gnss_Synchro)),
-          static_cast<uint32_t>(std::round(_fs * static_cast<double>(_interval_ms) / 1e3))),
+          gr::io_signature::make(1, 1, sizeof(Gnss_Synchro))),
       fs(_fs),
       current_T_rx_ms(0),
       sample_counter(0),
@@ -56,7 +56,9 @@ gnss_sdr_sample_counter::gnss_sdr_sample_counter(
       flag_m(false),
       flag_h(false),
       flag_days(false),
-      flag_enable_send_msg(false)  // enable it for reporting time with asynchronous message
+      flag_enable_send_msg(false),  // enable it for reporting time with asynchronous message
+      samples_since_last_output(0),
+      window_start_nitems(0)
 {
     message_port_register_out(pmt::mp("sample_counter"));
     set_max_noutput_items(1);
@@ -79,10 +81,31 @@ int64_t gnss_sdr_sample_counter::uint64diff(uint64_t first, uint64_t second)
 }
 
 
-int gnss_sdr_sample_counter::work(int noutput_items __attribute__((unused)),
+int gnss_sdr_sample_counter::general_work(int noutput_items,
+    gr_vector_int &ninput_items,
     gr_vector_const_void_star &input_items __attribute__((unused)),
     gr_vector_void_star &output_items)
 {
+    if (noutput_items == 0 || ninput_items[0] == 0)
+        {
+            return 0;
+        }
+
+    const uint64_t n_remaining_in_window = samples_per_output - samples_since_last_output;
+    const uint64_t n_to_consume = std::min<uint64_t>(static_cast<uint64_t>(ninput_items[0]), n_remaining_in_window);
+
+    consume(0, static_cast<int>(n_to_consume));
+    samples_since_last_output += n_to_consume;
+
+    if (samples_since_last_output < samples_per_output)
+        {
+            return 0;  // window not complete yet
+        }
+
+    const uint64_t this_window_start_nitems = window_start_nitems;
+    window_start_nitems += samples_per_output;
+    samples_since_last_output = 0;
+
     auto *out = reinterpret_cast<Gnss_Synchro *>(output_items[0]);
     out[0] = Gnss_Synchro();
     out[0].Flag_valid_symbol_output = false;
@@ -153,8 +176,7 @@ int gnss_sdr_sample_counter::work(int noutput_items __attribute__((unused)),
 
     // *************** sensor tags ****************
     std::vector<gr::tag_t> tags_vec;
-    // notice that nitems_read is updated in decimation blocks after leaving work() with return 1, equivalent to call consume_each
-    get_tags_in_range(tags_vec, 0, nitems_read(0), nitems_read(0) + samples_per_output, pmt::mp("sensor_data"));
+    get_tags_in_range(tags_vec, 0, this_window_start_nitems, this_window_start_nitems + samples_per_output, pmt::mp("sensor_data"));
     for (const auto &tag : tags_vec)
         {
             add_item_tag(0, nitems_written(0) + 1, tag.key, tag.value);
@@ -162,7 +184,7 @@ int gnss_sdr_sample_counter::work(int noutput_items __attribute__((unused)),
 
     // *************** time tags ****************
     tags_vec.clear();
-    this->get_tags_in_range(tags_vec, 0, this->nitems_read(0), this->nitems_read(0) + samples_per_output, pmt::mp("timetag"));
+    this->get_tags_in_range(tags_vec, 0, this_window_start_nitems, this_window_start_nitems + samples_per_output, pmt::mp("timetag"));
     for (const auto &it : tags_vec)
         {
             try

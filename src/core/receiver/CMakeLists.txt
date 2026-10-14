@@ -80,6 +80,10 @@ if(ENABLE_EVK1029)
     target_compile_definitions(core_receiver PRIVATE -DEVK1029_DRIVER=1)
 endif()
 
+if(ENABLE_GDARS)
+    target_compile_definitions(core_receiver PRIVATE -DGDARS_DRIVER=1)
+endif()
+
 if(GNURADIO_USES_STD_POINTERS)
     target_compile_definitions(core_receiver PUBLIC -DGNURADIO_USES_STD_POINTERS=1)
 endif()

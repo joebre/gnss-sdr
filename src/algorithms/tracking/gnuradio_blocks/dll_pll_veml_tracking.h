@@ -25,6 +25,7 @@
 #include "exponential_smoother.h"
 #include "gnss_block_interface.h"
 #include "gnss_time.h"  // for timetags produced by File_Timestamp_Signal_Source
+#include "secondary_code_synchronizer.h"
 #include "tow_to_trk.h"
 #include "tracking_FLL_PLL_filter.h"  // for PLL/FLL filter
 #include "tracking_loop_filter.h"     // for DLL filter
@@ -103,6 +104,7 @@ private:
     void map_correlator_to_iq(const gr_complex &c, float &out_i, float &out_q) const;
     void assign_correlators_to_synchro(Gnss_Synchro &synchro) const;
     void configure_bit_synchronizer();
+    void configure_secondary_code_synchronizer();
     bool cn0_and_tracking_lock_status(double coh_integration_time_s);
     bool acquire_secondary();
     int64_t uint64diff(uint64_t first, uint64_t second);
@@ -119,6 +121,7 @@ private:
     Tracking_FLL_PLL_filter d_carrier_loop_filter;
 
     HistogramBitSynchronizer d_bit_sync;
+    SecondaryCodeSynchronizer d_secondary_code_synchronizer;
 
     Gnss_Synchro *d_acquisition_gnss_synchro;
 
@@ -254,6 +257,7 @@ private:
     bool d_enable_extended_integration;
     bool d_Flag_PLL_180_deg_phase_locked;
     bool d_use_histogram_bit_sync;
+    bool d_use_secondary_code_statistical_sync{false};
     bool d_wait_for_bit_edge{false};
     bool d_b1c_prelock_output_pending{false};
     bool d_carrier_phase_discontinuity{true};  // pending report of a new carrier phase ambiguity

@@ -19,7 +19,7 @@
 #define GNSS_SDR_GNSS_SDR_SAMPLE_COUNTER_H
 
 #include "gnss_block_interface.h"
-#include <gnuradio/sync_decimator.h>
+#include <gnuradio/block.h>
 #include <gnuradio/types.h>  // for gr_vector_const_void_star
 #include <cstddef>           // for size_t
 #include <cstdint>
@@ -40,13 +40,14 @@ gnss_sdr_sample_counter_sptr gnss_sdr_make_sample_counter(
     int32_t _interval_ms,
     size_t _size);
 
-class gnss_sdr_sample_counter : public gr::sync_decimator
+class gnss_sdr_sample_counter : public gr::block
 {
 public:
     ~gnss_sdr_sample_counter() = default;
-    int work(int noutput_items,
+    int general_work(int noutput_items,
+        gr_vector_int &ninput_items,
         gr_vector_const_void_star &input_items,
-        gr_vector_void_star &output_items);
+        gr_vector_void_star &output_items) override;
 
 private:
     friend gnss_sdr_sample_counter_sptr gnss_sdr_make_sample_counter(
@@ -74,6 +75,8 @@ private:
     bool flag_h;            // True if the receiver has been running for at least 1 hour
     bool flag_days;         // True if the receiver has been running for at least 1 day
     bool flag_enable_send_msg;
+    uint64_t samples_since_last_output;  // Accumulated input samples toward the next output item
+    uint64_t window_start_nitems;
 };
 
 

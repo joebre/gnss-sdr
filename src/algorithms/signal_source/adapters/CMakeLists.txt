@@ -135,6 +135,11 @@ if(ENABLE_EVK1029)
     list(APPEND OPT_DRIVER_HEADERS evk1029_signal_source.h)
 endif()
 
+if(ENABLE_GDARS)
+    list(APPEND OPT_DRIVER_SOURCES GDARS_signal_source.cc)
+    list(APPEND OPT_DRIVER_HEADERS GDARS_signal_source.h)
+endif()
+
 set(SIGNAL_SOURCE_ADAPTER_SOURCES
     signal_source_base.cc
     file_source_base.cc
@@ -216,6 +221,7 @@ target_link_libraries(signal_source_adapters
     PUBLIC
         Boost::headers
         Gnuradio::blocks
+        Gnuradio::filter
         signal_source_gr_blocks
     PRIVATE
         algorithms_libs

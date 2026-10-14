@@ -107,6 +107,7 @@ dll_pll_veml_tracking::dll_pll_veml_tracking(const Dll_Pll_Conf &conf_)
           gr::io_signature::make(1, 1, sizeof(Gnss_Synchro))),
       d_trk_parameters(conf_),
       d_bit_sync(HistogramBitSynchronizer::Config()),
+      d_secondary_code_synchronizer(std::string("0"), SecondaryCodeSynchronizer::Config()),
       d_acquisition_gnss_synchro(nullptr),
       d_code_chip_rate(0.0),
       d_acq_code_phase_samples(0.0),
@@ -1239,6 +1240,7 @@ void dll_pll_veml_tracking::start_tracking()
     d_corrected_doppler = false;
     d_acc_carrier_phase_initialized = false;
     configure_bit_synchronizer();
+    configure_secondary_code_synchronizer();
 }
 
 
@@ -1595,6 +1597,10 @@ void dll_pll_veml_tracking::clear_tracking_vars()
     d_carr_ph_history.clear();
     d_code_ph_history.clear();
     d_bit_sync.reset();
+    if (d_use_secondary_code_statistical_sync)
+        {
+            d_secondary_code_synchronizer.reset();
+        }
     d_wait_for_bit_edge = false;
     d_bit_sync_target_epoch = 0;
 }
@@ -1625,6 +1631,25 @@ void dll_pll_veml_tracking::configure_bit_synchronizer()
     cfg.use_phase_dot_detector = d_trk_parameters.bs_use_phase_dot_detector;
     d_bit_sync = HistogramBitSynchronizer(cfg);
     d_bit_sync.reset();
+}
+
+
+void dll_pll_veml_tracking::configure_secondary_code_synchronizer()
+{
+    d_use_secondary_code_statistical_sync = d_secondary && d_trk_parameters.secondary_code_statistical_sync;
+    if (!d_use_secondary_code_statistical_sync)
+        {
+            return;
+        }
+
+    SecondaryCodeSynchronizer::Config cfg;
+    cfg.dominance_ratio = d_trk_parameters.scs_dominance_ratio;
+    cfg.runner_up_margin = d_trk_parameters.scs_runner_up_margin;
+    cfg.stable_best_required = d_trk_parameters.scs_stable_best_required;
+    cfg.min_score_for_lock = d_trk_parameters.scs_min_score_for_lock;
+    cfg.min_prompt_mag = d_trk_parameters.scs_min_prompt_mag;
+    d_secondary_code_synchronizer = SecondaryCodeSynchronizer(d_secondary_code_string, cfg);
+    d_secondary_code_synchronizer.reset();
 }
 
 
@@ -2563,16 +2588,33 @@ int dll_pll_veml_tracking::general_work(int noutput_items __attribute__((unused)
                                         // loss-of-lock regressions, but re-testing with real numbers showed all
                                         // configured satellites used in the first fix every run with this gate
                                         // removed, versus some missing before -- kept removed.
-                                        d_Prompt_circular_buffer.push_back(*d_Prompt);
-                                        if (d_Prompt_circular_buffer.size() == d_secondary_code_length)
+                                        if (d_use_secondary_code_statistical_sync)
                                             {
-                                                next_state = acquire_secondary();
+                                                // Opt-in alternative: accumulate evidence per phase hypothesis
+                                                // across many secondary-code cycles instead of requiring one
+                                                // perfect 20/20 window (see secondary_code_synchronizer.h).
+                                                next_state = d_secondary_code_synchronizer.update(*d_Prompt, true);
                                                 if (next_state)
                                                     {
-                                                        LOG(INFO) << d_systemName << " " << d_signal_pretty_name << " secondary code locked in channel " << d_channel
+                                                        LOG(INFO) << d_systemName << " " << d_signal_pretty_name << " secondary code locked (statistical sync) in channel " << d_channel
                                                                   << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << '\n';
-                                                        std::cout << d_systemName << " " << d_signal_pretty_name << " secondary code locked in channel " << d_channel
+                                                        std::cout << d_systemName << " " << d_signal_pretty_name << " secondary code locked (statistical sync) in channel " << d_channel
                                                                   << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << '\n';
+                                                    }
+                                            }
+                                        else
+                                            {
+                                                d_Prompt_circular_buffer.push_back(*d_Prompt);
+                                                if (d_Prompt_circular_buffer.size() == d_secondary_code_length)
+                                                    {
+                                                        next_state = acquire_secondary();
+                                                        if (next_state)
+                                                            {
+                                                                LOG(INFO) << d_systemName << " " << d_signal_pretty_name << " secondary code locked in channel " << d_channel
+                                                                          << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << '\n';
+                                                                std::cout << d_systemName << " " << d_signal_pretty_name << " secondary code locked in channel " << d_channel
+                                                                          << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << '\n';
+                                                            }
                                                     }
                                             }
                                     }
@@ -2647,6 +2689,25 @@ int dll_pll_veml_tracking::general_work(int noutput_items __attribute__((unused)
                                 d_Prompt_circular_buffer.clear();
                                 d_current_symbol = 0;
                                 d_current_data_symbol = 0;
+                                if (d_use_secondary_code_statistical_sync && d_secondary_code_synchronizer.locked())
+                                    {
+                                        // Unlike acquire_secondary()'s fixed 20-symbol window (always
+                                        // aligned to code position 0 by construction), lock here can
+                                        // happen at any point in the continuous stream.
+                                        d_current_symbol = d_secondary_code_synchronizer.next_symbol_phase();
+                                        d_Flag_PLL_180_deg_phase_locked = d_secondary_code_synchronizer.phase_180_deg_locked();
+                                        // The data-channel secondary code (e.g. L5I's NH10 alongside
+                                        // L5Q's NH20) is chip-synchronous with this one and its length
+                                        // always divides this code's length, so the same absolute phase
+                                        // reduces mod its own length -- it must NOT stay at the 0 just
+                                        // set above, or it silently desyncs whenever lock lands away
+                                        // from phase 0 (acquire_secondary() never had this problem since
+                                        // its window always resolved to phase 0).
+                                        if (d_data_secondary_code_length > 0)
+                                            {
+                                                d_current_data_symbol = d_current_symbol % d_data_secondary_code_length;
+                                            }
+                                    }
 
                                 if (d_enable_extended_integration)
                                     {

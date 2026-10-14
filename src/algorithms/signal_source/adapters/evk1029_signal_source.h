@@ -43,6 +43,7 @@
 #include <gnuradio/blocks/throttle.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class ConfigurationInterface;
 
@@ -76,6 +77,12 @@ public:
     void disconnect(gr::top_block_sptr top_block) override;
     gr::basic_block_sptr get_right_block() override;
 
+    //! Only valid when role + ".enable_freq_xlating" is true. Returns
+    //! evk1029_source_'s output port band_index, already baseband and
+    //! decimated, so the corresponding SignalConditioner's three stages can
+    //! all be set to Bypass and channels connect directly to this instead.
+    gr::basic_block_sptr get_baseband_block(unsigned int band_index);
+
 private:
     Evk1029Source_sptr evk1029_source_;
     gr::blocks::throttle::sptr throttle_;
@@ -88,6 +95,7 @@ private:
     unsigned int rf_channels_;
 
     bool enable_throttle_control_;
+    bool enable_freq_xlating_;
 };
 
 
